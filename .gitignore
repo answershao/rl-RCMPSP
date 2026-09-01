@@ -1,0 +1,19 @@
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+
+# Virtual environments and local configuration
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# macOS metadata
+.DS_Store
+__MACOSX/
+.vscode/*
