@@ -5,7 +5,7 @@ import numpy as np
 from gymnasium.utils.env_checker import check_env
 
 from src.core.rcmpsp import generate_schedule, parse_rcmp, validate_schedule
-from src.environments.rcmpsp_env import RCMPSPEnv
+from src.environments.rcmpsp_env import RCMPSPEnv, RESOURCE_UTILIZATION_WEIGHT
 
 
 INSTANCE = Path("MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp")
@@ -36,7 +36,11 @@ class RcmpspEnvTest(unittest.TestCase):
         schedule = env.schedule
         validate_schedule(env.instance, schedule)
         self.assertEqual(steps, len(env.instance.activities))
-        self.assertEqual(total_reward, -schedule.makespan)
+        expected_return = (
+            -schedule.makespan / env.horizon
+            + RESOURCE_UTILIZATION_WEIGHT * env._resource_utilization(schedule.makespan)
+        )
+        self.assertAlmostEqual(total_reward, expected_return)
         self.assertTrue(np.all(observation["activity_status"] == 2))
 
     def test_incremental_decoder_matches_batch_ssgs(self) -> None:

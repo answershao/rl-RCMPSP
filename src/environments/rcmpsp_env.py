@@ -12,6 +12,9 @@ from gymnasium import spaces
 from src.core.rcmpsp import ActivityId, Instance, Schedule, parse_rcmp, serial_sgs_insert, validate_schedule
 
 
+RESOURCE_UTILIZATION_WEIGHT = 0.1
+
+
 class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
     """Construct a serial SSGS schedule using continuous activity priorities.
 
@@ -107,6 +110,7 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         chosen = self.activity_ids[chosen_index]
 
         old_time = self.current_time
+        old_utilization = self._resource_utilization(old_time)
         start, finish = serial_sgs_insert(
             self.instance, chosen, self.starts, self.finishes, self.usage
         )
@@ -117,7 +121,15 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
             if self._remaining_predecessors[successor_index] == 0:
                 self._eligible_mask[successor_index] = True
         self.current_time = max(self.finishes.values(), default=0)
-        reward = float(-(self.current_time - old_time))
+        # Normalize both terms so mixed-size instances have a comparable
+        # return scale. The utilization term is an incremental potential:
+        # inserting an activity into an existing gap can still improve it.
+        new_utilization = self._resource_utilization(self.current_time)
+        utilization_gain = new_utilization - old_utilization
+        reward = (
+            -float(self.current_time - old_time) / max(self.horizon, 1)
+            + RESOURCE_UTILIZATION_WEIGHT * utilization_gain
+        )
         self._terminated = len(self.starts) == self.activity_count
 
         observation = self._observation()
@@ -143,6 +155,14 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
 
     def _eligible_ids(self) -> list[ActivityId]:
         return [self.activity_ids[index] for index in np.flatnonzero(self._eligible_mask)]
+
+    def _resource_utilization(self, end_time: int) -> float:
+        """Return aggregate capacity utilization over the current frontier."""
+        if end_time <= 0:
+            return 0.0
+        capacity = float(end_time * np.sum(self._capacities))
+        used = float(np.sum(self.usage[:end_time]))
+        return used / capacity if capacity > 0 else 0.0
 
     def _observation(self) -> dict[str, np.ndarray]:
         status = self._status
