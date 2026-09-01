@@ -1,0 +1,28 @@
+{
+  "train": [
+    "MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a2_nr2.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a2_nr3.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a5_nr1.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a5_nr2.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a5_nr3.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a10_nr1.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a10_nr2.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a10_nr3.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a20_nr1.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a20_nr2.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a20_nr3.rcmp"
+  ],
+  "validation": [
+    "MPSPLIB/RCMP/mp_j30_a2_nr4.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a5_nr4.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a10_nr4.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a20_nr4.rcmp"
+  ],
+  "test": [
+    "MPSPLIB/RCMP/mp_j30_a2_nr5.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a5_nr5.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a10_nr5.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a20_nr5.rcmp"
+  ]
+}

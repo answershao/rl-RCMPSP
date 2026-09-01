@@ -1,0 +1,29 @@
+"""Stable-Baselines3 adapter for the structured RCMPSP environment."""
+
+from __future__ import annotations
+
+import gymnasium as gym
+import numpy as np
+from gymnasium import spaces
+
+from rcmpsp_env import RCMPSPEnv
+from td3 import flatten_observation
+
+
+class FlattenRCMPSPObservation(gym.ObservationWrapper):
+    """Flatten and normalize RCMPSP observations to a float32 Box."""
+
+    def __init__(self, env: RCMPSPEnv):
+        super().__init__(env)
+        probe, _ = env.reset(seed=0)
+        size = flatten_observation(probe, env.instance.capacities, env.horizon).size
+        self.observation_space = spaces.Box(0.0, 1.0, shape=(size,), dtype=np.float32)
+
+    def observation(self, observation):
+        return flatten_observation(
+            observation, self.env.instance.capacities, self.env.horizon
+        )
+
+
+def make_sb3_env(instance) -> FlattenRCMPSPObservation:
+    return FlattenRCMPSPObservation(RCMPSPEnv(instance))
