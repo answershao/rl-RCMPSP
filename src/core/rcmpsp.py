@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Callable
 import random
 
+import numpy as np
+
 
 ActivityId = tuple[int, int]
 
@@ -186,11 +188,33 @@ def serial_sgs_insert(
 
 
 def _earliest_feasible_start(
-    usage: list[list[int]], capacities: tuple[int, ...], demand: tuple[int, ...], duration: int, earliest: int
+    usage: list[list[int]] | np.ndarray,
+    capacities: tuple[int, ...],
+    demand: tuple[int, ...],
+    duration: int,
+    earliest: int,
 ) -> int:
     if duration == 0:
         return earliest
     start = earliest
+    if isinstance(usage, np.ndarray):
+        capacities_array = np.asarray(capacities, dtype=np.int32)
+        demand_array = np.asarray(demand, dtype=np.int32)
+        while True:
+            finish = start + duration
+            window = usage[start:finish]
+            conflicts = np.any(window + demand_array > capacities_array, axis=1)
+            if not np.any(conflicts):
+                return start
+            # If the first conflicting instant is t, no start before the next
+            # instant that can fit the activity can be feasible.  This skips
+            # long occupied stretches without changing the serial SGS result.
+            conflict_time = start + int(np.flatnonzero(conflicts)[0])
+            instant_ok = np.all(
+                usage[conflict_time:] + demand_array <= capacities_array, axis=1
+            )
+            available = np.flatnonzero(instant_ok)
+            start = conflict_time + int(available[0]) if available.size else conflict_time + 1
     while True:
         finish = start + duration
         if all(
@@ -202,7 +226,10 @@ def _earliest_feasible_start(
         start += 1
 
 
-def _reserve(usage: list[list[int]], demand: tuple[int, ...], start: int, finish: int) -> None:
+def _reserve(usage: list[list[int]] | np.ndarray, demand: tuple[int, ...], start: int, finish: int) -> None:
+    if isinstance(usage, np.ndarray):
+        usage[start:finish] += np.asarray(demand, dtype=np.int32)
+        return
     while len(usage) < finish:
         usage.append([0] * len(demand))
     for time in range(start, finish):

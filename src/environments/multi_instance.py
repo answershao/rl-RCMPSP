@@ -57,6 +57,7 @@ class MultiInstanceRCMPSPEnv(gym.Env[np.ndarray, np.ndarray]):
         self.observation_space = spaces.Box(0.0, 1.0, (feature_size,), dtype=np.float32)
         self._rng = np.random.default_rng(seed)
         self._env: RCMPSPEnv | None = None
+        self._flat_buffers: dict[int, np.ndarray] = {}
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -84,10 +85,42 @@ class MultiInstanceRCMPSPEnv(gym.Env[np.ndarray, np.ndarray]):
 
     def _encode(self, observation):
         env = self.active_env
-        return flatten_observation(
-            observation,
-            env.instance.capacities,
-            env.horizon,
-            max_activities=self.max_activities,
-            max_resources=self.max_resources,
+        buffer = self._flat_buffers.get(self._active_index)
+        if buffer is None:
+            buffer = np.zeros(
+                observation_size(self.max_activities, self.max_resources), dtype=np.float32
+            )
+            n = env.activity_count
+            r = env.resource_count
+            capacities = np.maximum(np.asarray(env.instance.capacities, dtype=np.float32), 1.0)
+            activity_offset = 0
+            precedence_offset = self.max_activities
+            duration_offset = 2 * self.max_activities
+            eligible_offset = 3 * self.max_activities
+            demand_offset = 4 * self.max_activities
+            buffer[duration_offset : duration_offset + n] = (
+                env._durations.astype(np.float32) / max(env.horizon, 1)
+            )
+            demand_view = buffer[
+                demand_offset : demand_offset + self.max_activities * self.max_resources
+            ].reshape(self.max_activities, self.max_resources)
+            demand_view[:n, :r] = env._demands.astype(np.float32) / capacities
+            self._flat_buffers[self._active_index] = buffer
+
+        n = env.activity_count
+        r = env.resource_count
+        buffer[: self.max_activities] = 0.0
+        buffer[:n] = observation["activity_status"] / 2.0
+        buffer[self.max_activities : 2 * self.max_activities] = 0.0
+        buffer[self.max_activities : self.max_activities + n] = observation["precedence_satisfied"]
+        eligible_offset = 3 * self.max_activities
+        buffer[eligible_offset : eligible_offset + self.max_activities] = 0.0
+        buffer[eligible_offset : eligible_offset + n] = observation["eligible_mask"]
+        remaining_offset = 4 * self.max_activities + self.max_activities * self.max_resources
+        buffer[remaining_offset : remaining_offset + self.max_resources] = 0.0
+        buffer[remaining_offset : remaining_offset + r] = (
+            observation["remaining_capacity"]
+            / np.maximum(np.asarray(env.instance.capacities, dtype=np.float32), 1.0)
         )
+        buffer[remaining_offset + self.max_resources] = observation["current_time"][0] / max(env.horizon, 1)
+        return buffer
