@@ -12,7 +12,7 @@ from gymnasium import spaces
 from src.core.rcmpsp import parse_rcmp
 from src.environments.rcmpsp_env import RCMPSPEnv
 from src.environments.sb3_env import FlattenRCMPSPObservation
-from src.rl.td3 import flatten_observation
+from src.environments.observation import flatten_observation, observation_size
 
 
 def make_splits(root: str | Path = "MPSPLIB/RCMP") -> dict[str, list[str]]:
@@ -53,7 +53,7 @@ class MultiInstanceRCMPSPEnv(gym.Env[np.ndarray, np.ndarray]):
         self.max_resources = max([max_resources or 0] + [instance.resource_count for instance in self.instances])
         self.max_horizon = max([max_horizon or 0] + [sum(a.duration for a in instance.activities.values()) for instance in self.instances])
         self.action_space = spaces.Box(-1.0, 1.0, (self.max_activities,), dtype=np.float32)
-        feature_size = self.max_activities * 4 + self.max_activities * self.max_resources + self.max_resources + 1 + self.max_activities
+        feature_size = observation_size(self.max_activities, self.max_resources)
         self.observation_space = spaces.Box(0.0, 1.0, (feature_size,), dtype=np.float32)
         self._rng = np.random.default_rng(seed)
         self._env: RCMPSPEnv | None = None
@@ -64,7 +64,7 @@ class MultiInstanceRCMPSPEnv(gym.Env[np.ndarray, np.ndarray]):
         self._env = RCMPSPEnv(self.instances[index])
         observation, info = self._env.reset(seed=seed)
         self._active_index = index
-        return self._pad(observation), {**info, "instance": self.instance_paths[index].name}
+        return self._encode(observation), {**info, "instance": self.instance_paths[index].name}
 
     def step(self, action):
         if self._env is None:
@@ -74,7 +74,7 @@ class MultiInstanceRCMPSPEnv(gym.Env[np.ndarray, np.ndarray]):
             raise ValueError(f"expected action shape {self.action_space.shape}")
         n = self._env.activity_count
         observation, reward, terminated, truncated, info = self._env.step(action[:n])
-        return self._pad(observation), reward, terminated, truncated, info
+        return self._encode(observation), reward, terminated, truncated, info
 
     @property
     def active_env(self) -> RCMPSPEnv:
@@ -82,17 +82,12 @@ class MultiInstanceRCMPSPEnv(gym.Env[np.ndarray, np.ndarray]):
             raise RuntimeError("environment has not been reset")
         return self._env
 
-    def _pad(self, observation):
+    def _encode(self, observation):
         env = self.active_env
-        n, r = env.activity_count, env.resource_count
-        result = np.zeros(self.observation_space.shape, dtype=np.float32)
-        encoded = flatten_observation(observation, env.instance.capacities, env.horizon)
-        # Rebuild the flattened vector with fixed activity/resource axes.
-        offset = 0
-        for values in (observation["activity_status"] / 2.0, observation["precedence_satisfied"], observation["durations"] / max(env.horizon, 1), observation["eligible_mask"]):
-            result[offset:offset + n] = values; offset += self.max_activities
-        demands = observation["resource_demands"].astype(np.float32) / np.maximum(np.asarray(env.instance.capacities), 1)
-        result[offset:offset + self.max_activities * self.max_resources].reshape(self.max_activities, self.max_resources)[:n, :r] = demands; offset += self.max_activities * self.max_resources
-        result[offset:offset + r] = observation["remaining_capacity"] / np.maximum(np.asarray(env.instance.capacities), 1); offset += self.max_resources
-        result[offset] = observation["current_time"][0] / max(env.horizon, 1)
-        return result
+        return flatten_observation(
+            observation,
+            env.instance.capacities,
+            env.horizon,
+            max_activities=self.max_activities,
+            max_resources=self.max_resources,
+        )
