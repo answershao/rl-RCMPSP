@@ -59,13 +59,22 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         self._demands = np.asarray(
             [self.instance.activities[item].demand for item in self.activity_ids], dtype=np.int32
         )
+        self._capacities = capacities
+        self._predecessor_counts = np.asarray(
+            [len(self.instance.predecessors[activity_id]) for activity_id in self.activity_ids],
+            dtype=np.int32,
+        )
         self.starts: dict[ActivityId, int] = {}
         self.finishes: dict[ActivityId, int] = {}
         # The horizon is a safe upper bound for every serial schedule.  Keeping
         # this as an array avoids Python list growth and nested update loops.
         self.usage = np.zeros((self.horizon + 1, self.resource_count), dtype=np.int32)
         self._remaining_predecessors = np.zeros(self.activity_count, dtype=np.int32)
-        self._eligible: set[ActivityId] = set()
+        self._eligible_mask = np.zeros(self.activity_count, dtype=bool)
+        self._status = np.zeros(self.activity_count, dtype=np.int8)
+        self._precedence = np.zeros(self.activity_count, dtype=np.int8)
+        self._remaining_capacity = np.zeros(self.resource_count, dtype=np.int32)
+        self._current_time = np.zeros(1, dtype=np.int32)
         self.current_time = 0
         self._terminated = False
 
@@ -76,14 +85,8 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         self.starts = {}
         self.finishes = {}
         self.usage.fill(0)
-        self._remaining_predecessors[:] = [
-            len(self.instance.predecessors[activity_id]) for activity_id in self.activity_ids
-        ]
-        self._eligible = {
-            activity_id
-            for activity_id in self.activity_ids
-            if self._remaining_predecessors[self.activity_index[activity_id]] == 0
-        }
+        self._remaining_predecessors[:] = self._predecessor_counts
+        self._eligible_mask[:] = self._remaining_predecessors == 0
         self.current_time = 0
         self._terminated = False
         observation = self._observation()
@@ -97,24 +100,22 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         if not self.action_space.contains(action):
             raise ValueError(f"action must be float32 with shape {self.action_space.shape} in [-1, 1]")
 
-        eligible = self._eligible
-        if not eligible:
+        eligible_indices = np.flatnonzero(self._eligible_mask)
+        if not eligible_indices.size:
             raise RuntimeError("precedence graph is cyclic or has a missing predecessor")
-        chosen = max(
-            eligible,
-            key=lambda item: (float(action[self.activity_index[item]]), -self.activity_index[item]),
-        )
+        chosen_index = int(eligible_indices[np.argmax(action[eligible_indices])])
+        chosen = self.activity_ids[chosen_index]
 
         old_time = self.current_time
         start, finish = serial_sgs_insert(
             self.instance, chosen, self.starts, self.finishes, self.usage
         )
-        self._eligible.remove(chosen)
+        self._eligible_mask[chosen_index] = False
         for successor in self.instance.activities[chosen].successors:
             successor_index = self.activity_index[successor]
             self._remaining_predecessors[successor_index] -= 1
-            if self._remaining_predecessors[successor_index] == 0 and successor not in self.starts:
-                self._eligible.add(successor)
+            if self._remaining_predecessors[successor_index] == 0:
+                self._eligible_mask[successor_index] = True
         self.current_time = max(self.finishes.values(), default=0)
         reward = float(-(self.current_time - old_time))
         self._terminated = len(self.starts) == self.activity_count
@@ -141,28 +142,23 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         return schedule
 
     def _eligible_ids(self) -> list[ActivityId]:
-        return list(self._eligible)
+        return [self.activity_ids[index] for index in np.flatnonzero(self._eligible_mask)]
 
     def _observation(self) -> dict[str, np.ndarray]:
-        eligible = self._eligible if not self._terminated else set()
-        status = np.zeros(self.activity_count, dtype=np.int8)
+        status = self._status
+        status.fill(0)
         for activity_id, finish in self.finishes.items():
             status[self.activity_index[activity_id]] = 2 if self._terminated or finish < self.current_time else 1
 
-        precedence = np.asarray(
-            [
-                self._remaining_predecessors[self.activity_index[item]] == 0
-                for item in self.activity_ids
-            ],
-            dtype=np.int8,
-        )
-        eligible_mask = np.asarray(
-            [item in eligible for item in self.activity_ids], dtype=np.int8
-        )
+        precedence = self._precedence
+        np.equal(self._remaining_predecessors, 0, out=precedence)
+        eligible_mask = self._eligible_mask if not self._terminated else np.zeros_like(self._precedence)
         # The latest occupied interval gives a useful capacity signal at the
         # partial schedule frontier; at time zero no resource is occupied.
         frontier_usage = self.usage[self.current_time - 1] if self.current_time > 0 else 0
-        remaining = np.asarray(self.instance.capacities, dtype=np.int32) - frontier_usage
+        remaining = self._remaining_capacity
+        np.subtract(self._capacities, frontier_usage, out=remaining)
+        self._current_time[0] = self.current_time
         return {
             "activity_status": status,
             "precedence_satisfied": precedence,

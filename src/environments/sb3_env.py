@@ -17,10 +17,11 @@ class FlattenRCMPSPObservation(gym.ObservationWrapper):
         super().__init__(env)
         size = observation_size(env.activity_count, env.resource_count)
         self.observation_space = spaces.Box(0.0, 1.0, shape=(size,), dtype=np.float32)
+        self._flat_buffer = np.empty(size, dtype=np.float32)
 
     def observation(self, observation):
         return flatten_observation(
-            observation, self.env.instance.capacities, self.env.horizon
+            observation, self.env.instance.capacities, self.env.horizon, out=self._flat_buffer
         )
 
 

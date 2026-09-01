@@ -14,6 +14,7 @@ def flatten_observation(
     *,
     max_activities: int | None = None,
     max_resources: int | None = None,
+    out: np.ndarray | None = None,
 ) -> np.ndarray:
     """Flatten and normalize an observation, optionally padding its axes."""
     activity_count = observation["activity_status"].size
@@ -23,7 +24,14 @@ def flatten_observation(
     if max_activities < activity_count or max_resources < resource_count:
         raise ValueError("padding dimensions cannot be smaller than the observation")
 
-    result = np.zeros(observation_size(max_activities, max_resources), dtype=np.float32)
+    size = observation_size(max_activities, max_resources)
+    if out is None:
+        result = np.zeros(size, dtype=np.float32)
+    else:
+        if out.shape != (size,) or out.dtype != np.float32:
+            raise ValueError("out must be a float32 array with the flattened observation shape")
+        result = out
+        result.fill(0.0)
     status = observation["activity_status"].astype(np.float32) / 2.0
     precedence = observation["precedence_satisfied"].astype(np.float32)
     durations = observation["durations"].astype(np.float32) / max(horizon, 1)
