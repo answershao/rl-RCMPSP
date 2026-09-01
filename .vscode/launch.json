@@ -1,0 +1,60 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "RCMPSP: Baseline schedules",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src.scripts.baselines",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp",
+                "--baseline",
+                "random",
+                "--gantt",
+                "outputs/debug_baseline_gantt.png",
+                "--aon",
+                "outputs/debug_baseline_aon.png"
+            ]
+        },
+        {
+            "name": "RCMPSP: Train SB3 TD3 (single instance)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src.scripts.train_td3",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "--mode",
+                "single",
+                "--episodes",
+                "20",
+                "--output-dir",
+                "outputs/debug_td3_sb3"
+            ]
+        },
+        {
+            "name": "RCMPSP: Train SB3 TD3 (multi-instance)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src.scripts.train_td3",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "--mode",
+                "multi",
+                "--n-envs",
+                "8",
+                "--episodes",
+                "1000",
+                "--buffer-size",
+                "5000",
+                "--seed",
+                "17",
+                "--output-dir",
+                "outputs/td3_multi_s17"
+            ]
+        }
+    ]
+}

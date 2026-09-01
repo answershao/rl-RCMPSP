@@ -16,7 +16,7 @@ env/
 # macOS metadata
 .DS_Store
 __MACOSX/
-.vscode/*
+# .vscode/*
 
 # Generated experiment outputs
 outputs/**/*.png
