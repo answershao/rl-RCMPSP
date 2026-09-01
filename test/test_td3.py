@@ -2,8 +2,8 @@ import unittest
 import numpy as np
 import torch
 
-from rcmpsp_env import RCMPSPEnv
-from td3 import ReplayBuffer, TD3, flatten_observation
+from src.environments.rcmpsp_env import RCMPSPEnv
+from src.rl.td3 import ReplayBuffer, TD3, flatten_observation
 
 
 class Td3Test(unittest.TestCase):

@@ -10,8 +10,8 @@ from stable_baselines3 import TD3
 from stable_baselines3.common.noise import NormalActionNoise
 from stable_baselines3.common.utils import set_random_seed
 
-from multi_instance import MultiInstanceRCMPSPEnv, make_splits, write_splits
-from rcmpsp import generate_schedule, parse_rcmp, priority_fifo, priority_shortest_duration, random_priorities
+from src.core.rcmpsp import generate_schedule, parse_rcmp, priority_fifo, priority_shortest_duration, random_priorities
+from src.environments.multi_instance import MultiInstanceRCMPSPEnv, make_splits, write_splits
 
 
 def evaluate(model, paths, seed, reference):

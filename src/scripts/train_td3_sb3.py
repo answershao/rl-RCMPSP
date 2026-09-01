@@ -11,9 +11,9 @@ from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.noise import NormalActionNoise
 from stable_baselines3.common.utils import set_random_seed
 
-from gantt import plot_gantt
-from rcmpsp import generate_schedule, parse_rcmp, priority_fifo, priority_shortest_duration, random_priorities
-from sb3_env import make_sb3_env
+from src.core.rcmpsp import generate_schedule, parse_rcmp, priority_fifo, priority_shortest_duration, random_priorities
+from src.environments.sb3_env import make_sb3_env
+from src.visualization.gantt import plot_gantt
 
 
 def evaluate(model, env, episodes: int = 1) -> tuple[float, object]:

@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from gantt import plot_gantt
-from rcmpsp_env import RCMPSPEnv
+from src.environments.rcmpsp_env import RCMPSPEnv
+from src.visualization.gantt import plot_gantt
 
 
 INSTANCE = Path("MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp")

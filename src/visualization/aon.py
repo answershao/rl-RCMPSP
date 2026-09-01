@@ -10,7 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import networkx as nx
 
-from rcmpsp import Instance, Schedule
+from src.core.rcmpsp import Instance, Schedule
 
 
 def plot_aon(

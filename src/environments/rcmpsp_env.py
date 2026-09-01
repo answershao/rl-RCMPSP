@@ -9,7 +9,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from rcmpsp import ActivityId, Instance, Schedule, parse_rcmp, serial_sgs_insert, validate_schedule
+from src.core.rcmpsp import ActivityId, Instance, Schedule, parse_rcmp, serial_sgs_insert, validate_schedule
 
 
 class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):

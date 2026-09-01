@@ -1,9 +1,9 @@
 from pathlib import Path
 import unittest
 
-from rcmpsp import generate_schedule, parse_rcmp, priority_fifo, priority_shortest_duration, random_priorities, validate_schedule
-from gantt import plot_gantt
-from aon import plot_aon
+from src.core.rcmpsp import generate_schedule, parse_rcmp, priority_fifo, priority_shortest_duration, random_priorities, validate_schedule
+from src.visualization.aon import plot_aon
+from src.visualization.gantt import plot_gantt
 
 
 INSTANCE = Path("MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp")

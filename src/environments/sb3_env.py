@@ -6,8 +6,8 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from rcmpsp_env import RCMPSPEnv
-from td3 import flatten_observation
+from src.environments.rcmpsp_env import RCMPSPEnv
+from src.rl.td3 import flatten_observation
 
 
 class FlattenRCMPSPObservation(gym.ObservationWrapper):

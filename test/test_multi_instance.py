@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 
-from multi_instance import MultiInstanceRCMPSPEnv, make_splits
+from src.environments.multi_instance import MultiInstanceRCMPSPEnv, make_splits
 
 
 class MultiInstanceTest(unittest.TestCase):

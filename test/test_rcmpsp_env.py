@@ -4,8 +4,8 @@ import unittest
 import numpy as np
 from gymnasium.utils.env_checker import check_env
 
-from rcmpsp import generate_schedule, parse_rcmp, validate_schedule
-from rcmpsp_env import RCMPSPEnv
+from src.core.rcmpsp import generate_schedule, parse_rcmp, validate_schedule
+from src.environments.rcmpsp_env import RCMPSPEnv
 
 
 INSTANCE = Path("MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp")

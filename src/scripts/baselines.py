@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from aon import plot_aon
-from gantt import plot_gantt
-from rcmpsp import generate_schedule, parse_rcmp, priority_fifo, priority_shortest_duration, random_priorities
+from src.core.rcmpsp import generate_schedule, parse_rcmp, priority_fifo, priority_shortest_duration, random_priorities
+from src.visualization.aon import plot_aon
+from src.visualization.gantt import plot_gantt
 
 
 def main() -> None:

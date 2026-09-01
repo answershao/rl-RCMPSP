@@ -9,10 +9,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from gantt import plot_gantt
-from rcmpsp import generate_schedule, parse_rcmp, priority_fifo, priority_shortest_duration, random_priorities
-from rcmpsp_env import RCMPSPEnv
-from td3 import ReplayBuffer, TD3, flatten_observation
+from src.core.rcmpsp import generate_schedule, parse_rcmp, priority_fifo, priority_shortest_duration, random_priorities
+from src.environments.rcmpsp_env import RCMPSPEnv
+from src.rl.td3 import ReplayBuffer, TD3, flatten_observation
+from src.visualization.gantt import plot_gantt
 
 
 def run_episode(env, agent=None, replay=None, train=True, seed=None, exploration_noise=0.1):

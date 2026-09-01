@@ -5,8 +5,8 @@ from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.noise import NormalActionNoise
 import numpy as np
 
-from rcmpsp_env import RCMPSPEnv
-from sb3_env import make_sb3_env
+from src.environments.rcmpsp_env import RCMPSPEnv
+from src.environments.sb3_env import make_sb3_env
 
 
 class Sb3Test(unittest.TestCase):

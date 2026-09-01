@@ -9,10 +9,10 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from rcmpsp import parse_rcmp
-from rcmpsp_env import RCMPSPEnv
-from sb3_env import FlattenRCMPSPObservation
-from td3 import flatten_observation
+from src.core.rcmpsp import parse_rcmp
+from src.environments.rcmpsp_env import RCMPSPEnv
+from src.environments.sb3_env import FlattenRCMPSPObservation
+from src.rl.td3 import flatten_observation
 
 
 def make_splits(root: str | Path = "MPSPLIB/RCMP") -> dict[str, list[str]]:
