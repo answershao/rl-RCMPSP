@@ -147,18 +147,42 @@ def generate_schedule(
             raise ValueError("precedence graph is cyclic or has a missing predecessor")
 
         activity_id = min(eligible, key=lambda item: rank(instance.activities[item]))
-        activity = instance.activities[activity_id]
-        earliest = max((finishes[pred] for pred in instance.predecessors[activity_id]), default=0)
-        start = _earliest_feasible_start(usage, instance.capacities, activity.demand, activity.duration, earliest)
-        finish = start + activity.duration
-        _reserve(usage, activity.demand, start, finish)
-        starts[activity_id] = start
-        finishes[activity_id] = finish
+        serial_sgs_insert(instance, activity_id, starts, finishes, usage)
         unscheduled.remove(activity_id)
 
     schedule = Schedule(starts=starts, finishes=finishes, makespan=max(finishes.values(), default=0))
     validate_schedule(instance, schedule)
     return schedule
+
+
+def serial_sgs_insert(
+    instance: Instance,
+    activity_id: ActivityId,
+    starts: dict[ActivityId, int],
+    finishes: dict[ActivityId, int],
+    usage: list[list[int]],
+) -> tuple[int, int]:
+    """Insert one precedence-eligible activity at its earliest feasible start.
+
+    ``starts``, ``finishes``, and ``usage`` are updated in place so callers can
+    construct a schedule one priority decision at a time.
+    """
+    if activity_id in starts:
+        raise ValueError(f"activity {activity_id} is already scheduled")
+    missing = [pred for pred in instance.predecessors[activity_id] if pred not in finishes]
+    if missing:
+        raise ValueError(f"activity {activity_id} has unscheduled predecessors: {missing}")
+
+    activity = instance.activities[activity_id]
+    earliest = max((finishes[pred] for pred in instance.predecessors[activity_id]), default=0)
+    start = _earliest_feasible_start(
+        usage, instance.capacities, activity.demand, activity.duration, earliest
+    )
+    finish = start + activity.duration
+    _reserve(usage, activity.demand, start, finish)
+    starts[activity_id] = start
+    finishes[activity_id] = finish
+    return start, finish
 
 
 def _earliest_feasible_start(
