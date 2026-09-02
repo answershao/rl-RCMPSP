@@ -7,7 +7,11 @@ import numpy as np
 from gymnasium import spaces
 
 from src.environments.rcmpsp_env import RCMPSPEnv
-from src.environments.observation import flatten_observation, observation_size
+from src.environments.observation import (
+    build_observation_topology,
+    flatten_observation,
+    observation_size,
+)
 
 
 class FlattenRCMPSPObservation(gym.ObservationWrapper):
@@ -18,10 +22,22 @@ class FlattenRCMPSPObservation(gym.ObservationWrapper):
         size = observation_size(env.activity_count, env.resource_count)
         self.observation_space = spaces.Box(0.0, 1.0, shape=(size,), dtype=np.float32)
         self._flat_buffer = np.empty(size, dtype=np.float32)
+        self._topology = build_observation_topology(
+            env.instance,
+            env.activity_ids,
+            max_activities=env.activity_count,
+            horizon=env.horizon,
+        )
 
     def observation(self, observation):
         return flatten_observation(
-            observation, self.env.instance.capacities, self.env.horizon, out=self._flat_buffer
+            observation,
+            self.env.instance.capacities,
+            self.env.horizon,
+            successor_indices=self._topology.successor_indices,
+            successor_counts=self._topology.successor_counts,
+            downstream_durations=self._topology.downstream_durations,
+            out=self._flat_buffer,
         )
 
 

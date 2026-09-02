@@ -11,8 +11,13 @@ from gymnasium import spaces
 
 from src.core.rcmpsp import parse_rcmp
 from src.environments.rcmpsp_env import RCMPSPEnv
-from src.environments.sb3_env import FlattenRCMPSPObservation
-from src.environments.observation import flatten_observation, observation_size
+from src.environments.observation import (
+    MAX_SUCCESSORS,
+    ObservationTopology,
+    build_observation_topology,
+    flatten_observation,
+    observation_size,
+)
 
 
 def make_splits(root: str | Path = "MPSPLIB/RCMP") -> dict[str, list[str]]:
@@ -51,17 +56,18 @@ class MultiInstanceRCMPSPEnv(gym.Env[np.ndarray, np.ndarray]):
         self.instances = [parse_rcmp(path) for path in self.instance_paths]
         self.max_activities = max([max_activities or 0] + [len(instance.activities) for instance in self.instances])
         self.max_resources = max([max_resources or 0] + [instance.resource_count for instance in self.instances])
+        self.max_successors = MAX_SUCCESSORS
         self.max_horizon = max([max_horizon or 0] + [sum(a.duration for a in instance.activities.values()) for instance in self.instances])
         self.action_space = spaces.Box(-1.0, 1.0, (self.max_activities,), dtype=np.float32)
         feature_size = observation_size(self.max_activities, self.max_resources)
         self.observation_space = spaces.Box(0.0, 1.0, (feature_size,), dtype=np.float32)
-        self._rng = np.random.default_rng(seed)
         self._env: RCMPSPEnv | None = None
         self._flat_buffers: dict[int, np.ndarray] = {}
+        self._topologies: dict[int, ObservationTopology] = {}
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-        index = int(self.np_random.integers(len(self.instances))) if seed is not None else int(self._rng.integers(len(self.instances)))
+        index = int(self.np_random.integers(len(self.instances)))
         self._env = RCMPSPEnv(self.instances[index])
         observation, info = self._env.reset(seed=seed)
         self._active_index = index
@@ -90,37 +96,24 @@ class MultiInstanceRCMPSPEnv(gym.Env[np.ndarray, np.ndarray]):
             buffer = np.zeros(
                 observation_size(self.max_activities, self.max_resources), dtype=np.float32
             )
-            n = env.activity_count
-            r = env.resource_count
-            capacities = np.maximum(np.asarray(env.instance.capacities, dtype=np.float32), 1.0)
-            activity_offset = 0
-            precedence_offset = self.max_activities
-            duration_offset = 2 * self.max_activities
-            eligible_offset = 3 * self.max_activities
-            demand_offset = 4 * self.max_activities
-            buffer[duration_offset : duration_offset + n] = (
-                env._durations.astype(np.float32) / max(env.horizon, 1)
-            )
-            demand_view = buffer[
-                demand_offset : demand_offset + self.max_activities * self.max_resources
-            ].reshape(self.max_activities, self.max_resources)
-            demand_view[:n, :r] = env._demands.astype(np.float32) / capacities
             self._flat_buffers[self._active_index] = buffer
-
-        n = env.activity_count
-        r = env.resource_count
-        buffer[: self.max_activities] = 0.0
-        buffer[:n] = observation["activity_status"] / 2.0
-        buffer[self.max_activities : 2 * self.max_activities] = 0.0
-        buffer[self.max_activities : self.max_activities + n] = observation["precedence_satisfied"]
-        eligible_offset = 3 * self.max_activities
-        buffer[eligible_offset : eligible_offset + self.max_activities] = 0.0
-        buffer[eligible_offset : eligible_offset + n] = observation["eligible_mask"]
-        remaining_offset = 4 * self.max_activities + self.max_activities * self.max_resources
-        buffer[remaining_offset : remaining_offset + self.max_resources] = 0.0
-        buffer[remaining_offset : remaining_offset + r] = (
-            observation["remaining_capacity"]
-            / np.maximum(np.asarray(env.instance.capacities, dtype=np.float32), 1.0)
+        topology = self._topologies.get(self._active_index)
+        if topology is None:
+            topology = build_observation_topology(
+                env.instance,
+                env.activity_ids,
+                max_activities=self.max_activities,
+                horizon=env.horizon,
+            )
+            self._topologies[self._active_index] = topology
+        return flatten_observation(
+            observation,
+            env.instance.capacities,
+            env.horizon,
+            max_activities=self.max_activities,
+            max_resources=self.max_resources,
+            successor_indices=topology.successor_indices,
+            successor_counts=topology.successor_counts,
+            downstream_durations=topology.downstream_durations,
+            out=buffer,
         )
-        buffer[remaining_offset + self.max_resources] = observation["current_time"][0] / max(env.horizon, 1)
-        return buffer

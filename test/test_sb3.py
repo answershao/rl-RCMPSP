@@ -7,9 +7,25 @@ import numpy as np
 
 from src.environments.rcmpsp_env import RCMPSPEnv
 from src.environments.sb3_env import make_sb3_env
+from src.training.environments import make_multi_env, make_single_env, make_vector_env
 
 
 class Sb3Test(unittest.TestCase):
+    def test_training_environment_factories(self):
+        single = make_single_env("MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp")
+        observation, _ = single.reset(seed=1)
+        self.assertTrue(single.observation_space.contains(observation))
+
+        vector_env = make_vector_env(
+            [lambda: make_multi_env(["MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp"], seed=1)],
+            parallel=False,
+        )
+        try:
+            observation = vector_env.reset()
+            self.assertTrue(vector_env.observation_space.contains(observation[0]))
+        finally:
+            vector_env.close()
+
     def test_adapter_and_short_learning_run(self):
         base = RCMPSPEnv("MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp")
         check_env(base, warn=True, skip_render_check=True)

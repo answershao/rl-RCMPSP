@@ -16,6 +16,7 @@ from src.core.rcmpsp import (
     priority_shortest_duration,
     random_priorities,
 )
+from src.environments.observation import MAX_SUCCESSORS
 from src.training.features import RCMPSPStructuredExtractor
 
 
@@ -27,7 +28,15 @@ class PolicyEnvironment(Protocol):
     def step(self, action): ...
 
 
-def create_td3(env, *, seed: int, buffer_size: int) -> TD3:
+def create_td3(
+    env,
+    *,
+    seed: int,
+    buffer_size: int,
+    batch_size: int = 256,
+    device: str = "auto",
+    tensorboard_log: str | None = None,
+) -> TD3:
     """Create the common TD3 configuration used by all experiments."""
     action_count = env.action_space.shape[0]
     # Multi-instance observations are padded to the largest instance.  Encode
@@ -40,10 +49,11 @@ def create_td3(env, *, seed: int, buffer_size: int) -> TD3:
         "max_resources",
         getattr(getattr(base_env, "unwrapped", None), "resource_count", None),
     )
+    max_successors = getattr(base_env, "max_successors", MAX_SUCCESSORS)
     if max_resources is None:
         # Works for SubprocVecEnv, where worker environments are not exposed.
         obs_dim = int(env.observation_space.shape[0])
-        numerator = obs_dim - 4 * max_activities - 1
+        numerator = obs_dim - (6 + max_successors) * max_activities - 1
         if numerator <= 0 or numerator % (max_activities + 1):
             raise ValueError("cannot infer RCMPSP resource count from observation shape")
         max_resources = numerator // (max_activities + 1)
@@ -52,12 +62,11 @@ def create_td3(env, *, seed: int, buffer_size: int) -> TD3:
         env,
         learning_rate=3e-4,
         buffer_size=buffer_size,
-        learning_starts=100,
-        batch_size=100,
-        # The scheduling environment is inexpensive relative to a TD3 update.
-        # One update per four collected transitions substantially improves
-        # wall-clock throughput while retaining off-policy replay learning.
-        train_freq=4,
+        learning_starts=batch_size,
+        batch_size=batch_size,
+        # SB3 counts vector-environment steps here; train_freq=1 avoids
+        # accidentally reducing updates by another factor of n_envs.
+        train_freq=1,
         gradient_steps=1,
         tau=5e-3,
         gamma=0.99,
@@ -71,12 +80,18 @@ def create_td3(env, *, seed: int, buffer_size: int) -> TD3:
             "features_extractor_kwargs": {
                 "max_activities": max_activities,
                 "max_resources": max_resources,
+                "max_successors": max_successors,
+                # Graph gather/scatter is useful experimentally but is very
+                # expensive on CPU. Keep the fast shared-MLP path for training.
+                "graph_layers": 0,
                 "embedding_dim": 4,
                 "hidden_dim": 16,
                 "global_dim": 8,
             },
         },
         seed=seed,
+        device=device,
+        tensorboard_log=tensorboard_log,
         verbose=1,
     )
 

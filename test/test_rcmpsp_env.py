@@ -27,7 +27,7 @@ class RcmpspEnvTest(unittest.TestCase):
         rng = np.random.default_rng(11)
         while not terminated:
             action = rng.uniform(-1.0, 1.0, env.action_space.shape).astype(np.float32)
-            observation, reward, terminated, truncated, _ = env.step(action)
+            observation, reward, terminated, truncated, terminal_info = env.step(action)
             self.assertTrue(env.observation_space.contains(observation))
             self.assertFalse(truncated)
             total_reward += reward
@@ -42,6 +42,17 @@ class RcmpspEnvTest(unittest.TestCase):
         )
         self.assertAlmostEqual(total_reward, expected_return)
         self.assertTrue(np.all(observation["activity_status"] == 2))
+        self.assertEqual(terminal_info["makespan"], schedule.makespan)
+        self.assertEqual(terminal_info["normalized_makespan"], schedule.makespan / env.horizon)
+        self.assertGreaterEqual(terminal_info["resource_utilization"], 0.0)
+        self.assertLessEqual(terminal_info["resource_utilization"], 1.0)
+        self.assertEqual(terminal_info["activity_count"], env.activity_count)
+        self.assertAlmostEqual(terminal_info["episode_makespan_penalty"], -schedule.makespan / env.horizon)
+        self.assertAlmostEqual(
+            terminal_info["episode_utilization_bonus"],
+            RESOURCE_UTILIZATION_WEIGHT * env._resource_utilization(schedule.makespan),
+        )
+        self.assertAlmostEqual(terminal_info["episode_reward"], total_reward)
 
     def test_incremental_decoder_matches_batch_ssgs(self) -> None:
         instance = parse_rcmp(INSTANCE)
