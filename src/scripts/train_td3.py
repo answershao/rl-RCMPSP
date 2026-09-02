@@ -23,6 +23,44 @@ from src.visualization.gantt import plot_gantt
 DEFAULT_INSTANCE = Path("MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp")
 
 
+def resolve_device(requested: str) -> str:
+    """Resolve and validate the learner device before constructing SB3."""
+    requested = requested.strip().lower()
+    if requested == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    elif requested == "cuda" or requested.startswith("cuda:"):
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA was requested but PyTorch cannot access a CUDA device. "
+                "Install a CUDA-enabled PyTorch build and check the scheduler allocation."
+            )
+        if requested.startswith("cuda:"):
+            try:
+                index = torch.device(requested).index
+            except (RuntimeError, ValueError) as exc:
+                raise ValueError(f"invalid CUDA device: {requested}") from exc
+            if index is None or index < 0 or index >= torch.cuda.device_count():
+                raise ValueError(
+                    f"{requested} is unavailable; visible CUDA devices: {torch.cuda.device_count()}"
+                )
+        device = requested
+    elif requested == "cpu":
+        device = requested
+    else:
+        raise ValueError("--device must be one of: auto, cpu, cuda, cuda:N")
+
+    if device.startswith("cuda"):
+        index = torch.cuda.current_device() if device == "cuda" else torch.device(device).index
+        index = 0 if index is None else index
+        print(
+            f"device={device}; GPU={torch.cuda.get_device_name(index)}; "
+            f"CUDA runtime={torch.version.cuda}"
+        )
+    else:
+        print(f"device={device}; CUDA available={torch.cuda.is_available()}")
+    return device
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("single", "multi"), default="single")
@@ -208,6 +246,7 @@ def train_multi(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
+    args.device = resolve_device(args.device)
     if args.total_timesteps < 1:
         raise ValueError("--total-timesteps must be at least 1")
     if args.buffer_size is not None and args.buffer_size < 1:
