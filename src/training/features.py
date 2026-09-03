@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import torch as th
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from torch import nn
@@ -53,6 +55,7 @@ class SharedDirectedGINExtractor(BaseFeaturesExtractor):
         embedding_dim: int = 32,
         hidden_dim: int = 64,
         global_dim: int = 16,
+        mixed_precision: str = "none",
     ) -> None:
         if gin_layers < 1:
             raise ValueError("gin_layers must be positive")
@@ -69,6 +72,7 @@ class SharedDirectedGINExtractor(BaseFeaturesExtractor):
         self.max_successors = max_successors
         self.embedding_dim = embedding_dim
         self.global_dim = global_dim
+        self.mixed_precision = mixed_precision
         self.set_static_cache(static_cache)
 
         self.global_encoder = nn.Sequential(
@@ -117,7 +121,20 @@ class SharedDirectedGINExtractor(BaseFeaturesExtractor):
             else:
                 self.register_buffer(name, tensor)
 
+    def _autocast(self, tensor: th.Tensor):
+        if not tensor.is_cuda or self.mixed_precision == "none":
+            return nullcontext()
+        dtype = th.bfloat16 if self.mixed_precision == "bf16" else th.float16
+        return th.autocast(device_type="cuda", dtype=dtype)
+
     def forward(self, observations: th.Tensor) -> th.Tensor:
+        with self._autocast(observations):
+            features = self._forward(observations)
+        # Keep distributions and PPO losses in FP32; autocast is only needed
+        # for the encoder's linear algebra.
+        return features.float()
+
+    def _forward(self, observations: th.Tensor) -> th.Tensor:
         n = self.max_activities
         r = self.max_resources
         layout = self.layout
@@ -198,11 +215,13 @@ class GINActorCriticHeads(nn.Module):
         embedding_dim: int,
         global_dim: int,
         hidden_dim: int = 64,
+        mixed_precision: str = "none",
     ) -> None:
         super().__init__()
         self.max_activities = max_activities
         self.embedding_dim = embedding_dim
         self.global_dim = global_dim
+        self.mixed_precision = mixed_precision
         self.latent_dim_pi = max_activities
         self.latent_dim_vf = 1
         self.actor = nn.Sequential(
@@ -218,6 +237,12 @@ class GINActorCriticHeads(nn.Module):
             nn.Linear(hidden_dim, 1),
         )
 
+    def _autocast(self, tensor: th.Tensor):
+        if not tensor.is_cuda or self.mixed_precision == "none":
+            return nullcontext()
+        dtype = th.bfloat16 if self.mixed_precision == "bf16" else th.float16
+        return th.autocast(device_type="cuda", dtype=dtype)
+
     def _unpack(
         self, features: th.Tensor
     ) -> tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
@@ -232,18 +257,22 @@ class GINActorCriticHeads(nn.Module):
         return embeddings, global_embedding, activity_mask, eligible
 
     def forward_actor(self, features: th.Tensor) -> th.Tensor:
-        embeddings, _, activity_mask, eligible = self._unpack(features)
-        logits = self.actor(embeddings).squeeze(-1)
-        legal = (activity_mask > 0.5) & (eligible > 0.5)
-        return logits.masked_fill(~legal, th.finfo(logits.dtype).min)
+        with self._autocast(features):
+            embeddings, _, activity_mask, eligible = self._unpack(features)
+            logits = self.actor(embeddings).squeeze(-1)
+            legal = (activity_mask > 0.5) & (eligible > 0.5)
+            logits = logits.masked_fill(~legal, th.finfo(logits.dtype).min)
+        return logits.float()
 
     def forward_critic(self, features: th.Tensor) -> th.Tensor:
-        embeddings, global_embedding, activity_mask, _ = self._unpack(features)
-        valid = activity_mask.unsqueeze(-1)
-        embedding_sum = (embeddings * valid).sum(dim=1)
-        embedding_mean = embedding_sum / valid.sum(dim=1).clamp(min=1.0)
-        graph_embedding = th.cat([embedding_sum, embedding_mean, global_embedding], dim=1)
-        return self.critic(graph_embedding)
+        with self._autocast(features):
+            embeddings, global_embedding, activity_mask, _ = self._unpack(features)
+            valid = activity_mask.unsqueeze(-1)
+            embedding_sum = (embeddings * valid).sum(dim=1)
+            embedding_mean = embedding_sum / valid.sum(dim=1).clamp(min=1.0)
+            graph_embedding = th.cat([embedding_sum, embedding_mean, global_embedding], dim=1)
+            values = self.critic(graph_embedding)
+        return values.float()
 
     def forward(self, features: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
         return self.forward_actor(features), self.forward_critic(features)

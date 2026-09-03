@@ -40,6 +40,7 @@ class GINActorCriticPolicy(ActorCriticPolicy):
             max_activities=extractor.max_activities,
             embedding_dim=extractor.embedding_dim,
             global_dim=extractor.global_dim,
+            mixed_precision=extractor.mixed_precision,
         )
 
     def _build(self, lr_schedule) -> None:
@@ -76,6 +77,9 @@ def create_ppo(
     batch_size: int = 256,
     n_epochs: int = 2,
     gin_layers: int = 2,
+    mixed_precision: str = "none",
+    torch_compile: bool = False,
+    compile_mode: str = "reduce-overhead",
     tensorboard_log: str | None = None,
 ) -> PPO:
     """Create PPO with a shared directed GIN and masked discrete actor.
@@ -87,6 +91,8 @@ def create_ppo(
         raise ValueError("n_steps, batch_size, n_epochs, and gin_layers must be positive")
     if not instances:
         raise ValueError("instances must not be empty")
+    if mixed_precision not in {"none", "bf16", "fp16"}:
+        raise ValueError("mixed_precision must be one of: none, bf16, fp16")
     action_count = int(env.action_space.n)
     base_env = env.envs[0] if hasattr(env, "envs") else env
     max_activities = action_count
@@ -100,7 +106,7 @@ def create_ppo(
         max_resources=max_resources,
         max_successors=max_successors,
     )
-    return PPO(
+    model = PPO(
         GINActorCriticPolicy,
         env,
         learning_rate=3e-4,
@@ -122,6 +128,7 @@ def create_ppo(
                 "embedding_dim": 32,
                 "hidden_dim": 64,
                 "global_dim": 16,
+                "mixed_precision": mixed_precision,
             },
         },
         seed=seed,
@@ -129,6 +136,12 @@ def create_ppo(
         tensorboard_log=tensorboard_log,
         verbose=1,
     )
+    if torch_compile:
+        # Compile only the compute-heavy modules. Keeping the SB3 policy itself
+        # unwrapped preserves its save/load and callback interfaces.
+        model.policy.features_extractor.compile(mode=compile_mode, dynamic=True)
+        model.policy.mlp_extractor.compile(mode=compile_mode, dynamic=True)
+    return model
 
 
 def run_policy_episode(model: PPO, env: PolicyEnvironment, *, seed: int | None = None) -> dict:

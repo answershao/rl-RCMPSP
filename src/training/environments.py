@@ -45,8 +45,20 @@ def make_multi_env(
     )
 
 
-def make_vector_env(env_fns: list[Callable[[], object]], parallel: bool) -> VecEnv:
-    """Use spawn-based workers when parallel execution is requested."""
-    if not parallel:
+def make_vector_env(
+    env_fns: list[Callable[[], object]],
+    parallel: bool | None = None,
+    *,
+    backend: str = "auto",
+    start_method: str = "spawn",
+) -> VecEnv:
+    """Build either an in-process or subprocess SB3 vector environment."""
+    if backend not in {"auto", "dummy", "subproc"}:
+        raise ValueError("backend must be one of: auto, dummy, subproc")
+    if parallel is not None:
+        backend = "subproc" if parallel else "dummy"
+    elif backend == "auto":
+        backend = "subproc" if len(env_fns) > 1 else "dummy"
+    if backend == "dummy":
         return DummyVecEnv(env_fns)
-    return SubprocVecEnv(env_fns, start_method="spawn")
+    return SubprocVecEnv(env_fns, start_method=start_method)

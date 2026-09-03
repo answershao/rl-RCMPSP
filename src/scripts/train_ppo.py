@@ -6,6 +6,7 @@ import argparse
 import csv
 from functools import partial
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import numpy as np
@@ -37,6 +38,27 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--mixed-precision", choices=("none", "bf16", "fp16"), default="none",
+        help="Autocast GIN and policy heads on CUDA; bf16 is recommended for A800.",
+    )
+    parser.add_argument(
+        "--torch-compile", action="store_true",
+        help="Compile the GIN and policy heads (initial iterations include compilation time).",
+    )
+    parser.add_argument(
+        "--compile-mode", choices=("default", "reduce-overhead", "max-autotune"),
+        default="reduce-overhead",
+    )
+    parser.add_argument(
+        "--cuda-matmul-precision", choices=("highest", "high", "medium"), default="high",
+        help="PyTorch float32 matrix multiplication precision on CUDA; high enables TF32.",
+    )
+    parser.add_argument("--vec-env", choices=("auto", "dummy", "subproc"), default="auto")
+    parser.add_argument(
+        "--start-method", choices=("spawn", "forkserver", "fork"), default="spawn",
+        help="Multiprocessing start method used by the subproc vector environment.",
+    )
     parser.add_argument("--torch-threads", type=int, default=1)
     parser.add_argument("--torch-interop-threads", type=int, default=1)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/ppo_gnn"))
@@ -66,6 +88,26 @@ def resolve_device(requested: str) -> str:
     if requested in {"cpu", "cuda"} or requested.startswith("cuda:"):
         return requested
     raise ValueError("--device must be one of: auto, cpu, cuda, cuda:N")
+
+
+def configure_torch_runtime(args: argparse.Namespace) -> None:
+    """Configure CPU threads and CUDA math without changing PPO semantics."""
+    torch.set_num_threads(args.torch_threads)
+    torch.set_num_interop_threads(args.torch_interop_threads)
+    if args.torch_compile and shutil.which("g++") is None:
+        print("g++ is unavailable; disabling torch.compile and using eager execution")
+        args.torch_compile = False
+    if not args.device.startswith("cuda"):
+        if args.mixed_precision != "none":
+            print("mixed precision requested without CUDA; disabling it")
+            args.mixed_precision = "none"
+        if args.torch_compile:
+            print("warning: torch.compile on CPU can reduce throughput for this small policy")
+        return
+    torch.set_float32_matmul_precision(args.cuda_matmul_precision)
+    torch.backends.cuda.matmul.allow_tf32 = args.cuda_matmul_precision != "highest"
+    if args.mixed_precision == "bf16" and not torch.cuda.is_bf16_supported():
+        raise RuntimeError("the selected CUDA device does not support bf16")
 
 
 def evaluate_and_save_results(model: PPO, splits: dict[str, list[str]], seed: int,
@@ -156,9 +198,11 @@ def main() -> None:
         raise ValueError("--exact-time-limit must be non-negative")
     if args.exact_workers < 1:
         raise ValueError("--exact-workers must be positive")
+    rollout_size = args.n_envs * args.n_steps
+    if rollout_size % args.batch_size:
+        raise ValueError("batch-size must divide n-envs * n-steps")
     args.device = resolve_device(args.device)
-    torch.set_num_threads(args.torch_threads)
-    torch.set_num_interop_threads(args.torch_interop_threads)
+    configure_torch_runtime(args)
     set_random_seed(args.seed)
 
     splits = make_splits()
@@ -175,7 +219,14 @@ def main() -> None:
         max_resources=max_resources,
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"device={args.device}; envs={args.n_envs}; obs_dim={observation_size(max_activities, max_resources)}")
+    runtime = (
+        f"device={args.device}; envs={args.n_envs}; vec_env={args.vec_env}; "
+        f"rollout={rollout_size}; batch={args.batch_size}; amp={args.mixed_precision}; "
+        f"compile={args.torch_compile}; obs_dim={observation_size(max_activities, max_resources)}"
+    )
+    if args.device.startswith("cuda"):
+        runtime += f"; gpu={torch.cuda.get_device_name(torch.device(args.device))}"
+    print(runtime)
     if args.evaluate_only:
         model_path = args.output_dir / "final_model.zip"
         if not model_path.exists():
@@ -199,7 +250,11 @@ def main() -> None:
         )
         for rank in range(args.n_envs)
     ]
-    env = make_vector_env(env_fns, parallel=args.n_envs > 1)
+    env = make_vector_env(
+        env_fns,
+        backend=args.vec_env,
+        start_method=args.start_method,
+    )
     model = create_ppo(
         env,
         instances=train_instances,
@@ -209,6 +264,9 @@ def main() -> None:
         batch_size=args.batch_size,
         n_epochs=args.n_epochs,
         gin_layers=args.gin_layers,
+        mixed_precision=args.mixed_precision,
+        torch_compile=args.torch_compile,
+        compile_mode=args.compile_mode,
         tensorboard_log=str(args.output_dir / "tensorboard"),
     )
     try:

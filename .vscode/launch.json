@@ -18,7 +18,7 @@
             ]
         },
         {
-            "name": "RCMPSP: Train PPO-GIN (multi-instance)",
+            "name": "RCMPSP: Train PPO-GIN (A800 throughput)",
             "type": "debugpy",
             "request": "launch",
             "module": "src.scripts.train_ppo",
@@ -30,7 +30,7 @@
                 "--total-timesteps",
                 "6400000",
                 "--batch-size",
-                "1024",
+                "8192",
                 "--n-steps",
                 "256",
                 "--n-epochs",
@@ -38,21 +38,32 @@
                 "--gin-layers",
                 "2",
                 "--device",
-                "cpu",
+                "cuda:0",
+                "--mixed-precision",
+                "bf16",
+                "--cuda-matmul-precision",
+                "high",
+                "--torch-compile",
+                "--compile-mode",
+                "reduce-overhead",
+                "--vec-env",
+                "subproc",
+                "--start-method",
+                "spawn",
                 "--torch-threads",
-                "8",
+                "1",
                 "--torch-interop-threads",
                 "1",
                 "--seed",
                 "17",
                 "--splits",
-                "outputs/ppo_gin_launch/splits.json",
+                "outputs/ppo_gin_a800/splits.json",
                 "--exact-time-limit",
                 "60",
                 "--exact-workers",
                 "1",
                 "--output-dir",
-                "outputs/ppo_gin_launch"
+                "outputs/ppo_gin_a800"
             ]
         },
         {
@@ -117,9 +128,9 @@
                 "--exact-workers",
                 "1",
                 "--splits",
-                "outputs/ppo_gin_launch/splits.json",
+                "outputs/ppo_gin_a800/splits.json",
                 "--output-dir",
-                "outputs/ppo_gin_launch"
+                "outputs/ppo_gin_a800"
             ]
         }
     ]
