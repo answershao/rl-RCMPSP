@@ -1,35 +1,65 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import numpy as np
 
-from src.environments.multi_instance import MultiInstanceRCMPSPEnv, make_splits
-from src.environments.observation import MAX_SUCCESSORS, ObservationLayout
+from src.environments.multi_instance import MultiInstanceRCMPSPEnv, make_splits, write_splits
+from src.environments.observation import (
+    MAX_SUCCESSORS,
+    ObservationLayout,
+    build_static_graph_cache,
+)
 from src.environments.sb3_env import make_sb3_env
 
 
 class MultiInstanceTest(unittest.TestCase):
+    def test_write_splits_creates_parent_directory(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "nested" / "splits.json"
+            self.assertEqual(write_splits(path), path)
+            self.assertTrue(path.is_file())
+
     def test_fixed_padding_and_episode(self):
         splits = make_splits()
         env = MultiInstanceRCMPSPEnv(splits["train"][:2], seed=3)
         obs, _ = env.reset(seed=3)
         self.assertTrue(env.observation_space.contains(obs))
 
-    def test_observation_contains_successor_indices(self):
+    def test_observation_uses_catalog_instance_index(self):
+        env = MultiInstanceRCMPSPEnv(
+            ["MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp"],
+            instance_indices=[3],
+            catalog_size=5,
+        )
+        observation, _ = env.reset(seed=3)
+        layout = ObservationLayout(env.max_activities, env.max_resources)
+        self.assertAlmostEqual(float(observation[layout.instance_index]), 0.8)
+
+    def test_static_graph_cache_contains_successor_indices(self):
         env = MultiInstanceRCMPSPEnv(["MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp"], seed=3)
         observation, _ = env.reset(seed=3)
         active = env.active_env
+        layout = ObservationLayout(env.max_activities, env.max_resources)
+        cache = build_static_graph_cache(
+            [active.instance],
+            max_activities=env.max_activities,
+            max_resources=env.max_resources,
+        )
+        self.assertEqual(cache.instance_names, (active.instance.name,))
+        self.assertEqual(int(cache.activity_mask.sum()), active.activity_count)
         activity_id = active.activity_ids[0]
         successors = active.instance.activities[activity_id].successors
-        layout = ObservationLayout(env.max_activities, env.max_resources)
-        successor_view = observation[layout.successor_indices].reshape(
-            env.max_activities, MAX_SUCCESSORS
+        self.assertEqual(cache.successor_indices.shape[-1], MAX_SUCCESSORS)
+        expected = [active.activity_index[item] for item in successors]
+        np.testing.assert_array_equal(
+            cache.successor_indices[0, 0, :len(successors)], expected
         )
-        expected = [(active.activity_index[item] + 1) / env.max_activities for item in successors]
-        np.testing.assert_allclose(successor_view[0, : len(successors)], expected)
         terminated = False
         while not terminated:
-            obs, _, terminated, truncated, _ = env.step(np.zeros(env.max_activities, dtype=np.float32))
+            eligible = np.flatnonzero(observation[layout.eligible_mask] > 0.5)
+            observation, _, terminated, truncated, _ = env.step(int(eligible[0]))
             self.assertFalse(truncated)
-        self.assertTrue(env.observation_space.contains(obs))
+        self.assertTrue(env.observation_space.contains(observation))
 
     def test_unpadded_encoding_matches_single_instance_wrapper(self):
         path = "MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp"
@@ -44,17 +74,14 @@ class MultiInstanceTest(unittest.TestCase):
         fields = (
             layout.activity_status,
             layout.precedence_satisfied,
-            layout.durations,
             layout.eligible_mask,
-            layout.resource_demands,
-            layout.successor_indices,
-            layout.successor_counts,
-            layout.downstream_durations,
-            layout.global_features,
+            layout.remaining_capacity,
         )
         self.assertEqual(fields[0].start, 0)
-        self.assertEqual(fields[-1].stop, layout.size)
         self.assertTrue(all(first.stop == second.start for first, second in zip(fields, fields[1:])))
+        self.assertEqual(fields[-1].stop, layout.current_time)
+        self.assertEqual(layout.current_time + 1, layout.instance_index)
+        self.assertEqual(layout.instance_index + 1, layout.size)
 
 
 if __name__ == "__main__":

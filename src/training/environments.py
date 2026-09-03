@@ -29,7 +29,8 @@ def make_multi_env(
     *,
     max_activities: int | None = None,
     max_resources: int | None = None,
-    max_horizon: int | None = None,
+    instance_indices: list[int] | None = None,
+    catalog_size: int | None = None,
 ) -> Monitor:
     """Create a monitored multi-instance environment with optional padding."""
     return monitored_env(
@@ -38,7 +39,8 @@ def make_multi_env(
             seed=seed,
             max_activities=max_activities,
             max_resources=max_resources,
-            max_horizon=max_horizon,
+            instance_indices=instance_indices,
+            catalog_size=catalog_size,
         )
     )
 

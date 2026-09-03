@@ -1,0 +1,11 @@
+{
+  "train": [
+    "MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a2_nr2.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a2_nr3.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a2_nr4.rcmp",
+    "MPSPLIB/RCMP/mp_j30_a2_nr5.rcmp"
+  ],
+  "validation": [],
+  "test": []
+}

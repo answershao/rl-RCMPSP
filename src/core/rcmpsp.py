@@ -125,9 +125,9 @@ def generate_schedule(
 ) -> Schedule:
     """Build a feasible schedule with a serial SGS and integer resource profiles.
 
-    The priority is the PPO action interface: a continuous score only
-    chooses among precedence-eligible activities. Resource allocation remains
-    the instance's fixed integer demand throughout a non-preemptive activity.
+    The priority callback or score map chooses among precedence-eligible
+    activities. Resource allocation remains the instance's fixed integer
+    demand throughout a non-preemptive activity.
     """
     unscheduled = set(instance.activities)
     starts: dict[ActivityId, int] = {}

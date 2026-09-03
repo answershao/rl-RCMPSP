@@ -16,6 +16,7 @@ TERMINAL_METRICS = (
     "episode_makespan_penalty",
     "episode_utilization_bonus",
     "episode_fifo_relative_bonus",
+    "episode_invalid_action_penalty",
     "episode_reward",
 )
 

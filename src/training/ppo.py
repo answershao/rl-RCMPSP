@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Protocol
 
 import numpy as np
+from torch import nn
+from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3 import PPO
 
 from src.core.rcmpsp import (
     Instance,
     generate_schedule,
+    parse_rcmp,
     priority_fifo,
     priority_shortest_duration,
     random_priorities,
 )
-from src.environments.observation import MAX_SUCCESSORS
-from src.training.features import RCMPSPStructuredExtractor
+from src.environments.observation import MAX_SUCCESSORS, build_static_graph_cache
+from src.training.features import GINActorCriticHeads, SharedDirectedGINExtractor
 
 
 class PolicyEnvironment(Protocol):
@@ -25,34 +29,79 @@ class PolicyEnvironment(Protocol):
     def step(self, action): ...
 
 
+class GINActorCriticPolicy(ActorCriticPolicy):
+    """PPO policy with a shared GIN trunk and independent task-specific heads."""
+
+    def _build_mlp_extractor(self) -> None:
+        extractor = self.features_extractor
+        if not isinstance(extractor, SharedDirectedGINExtractor):
+            raise TypeError("GINActorCriticPolicy requires SharedDirectedGINExtractor")
+        self.mlp_extractor = GINActorCriticHeads(
+            max_activities=extractor.max_activities,
+            embedding_dim=extractor.embedding_dim,
+            global_dim=extractor.global_dim,
+        )
+
+    def _build(self, lr_schedule) -> None:
+        self._build_mlp_extractor()
+        # The actor head already emits one masked logit per discrete action and
+        # the critic head already emits a scalar value.
+        self.action_net = nn.Identity()
+        self.value_net = nn.Identity()
+        if self.ortho_init:
+            self.features_extractor.apply(
+                partial(self.init_weights, gain=np.sqrt(2))
+            )
+            self.mlp_extractor.apply(
+                partial(self.init_weights, gain=np.sqrt(2))
+            )
+            self.mlp_extractor.actor[-1].apply(
+                partial(self.init_weights, gain=0.01)
+            )
+            self.mlp_extractor.critic[-1].apply(
+                partial(self.init_weights, gain=1.0)
+            )
+        self.optimizer = self.optimizer_class(
+            self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
+        )
+
+
 def create_ppo(
     env,
     *,
+    instances: list[Instance],
     seed: int,
     device: str = "auto",
     n_steps: int = 256,
     batch_size: int = 256,
-    n_epochs: int = 4,
-    graph_layers: int = 0,
+    n_epochs: int = 2,
+    gin_layers: int = 2,
     tensorboard_log: str | None = None,
 ) -> PPO:
-    """Create a PPO learner with precedence-message-passing features.
+    """Create PPO with a shared directed GIN and masked discrete actor.
 
-    Actions are continuous activity-priority vectors, decoded into feasible
-    schedules by the environment.
+    The actor selects one eligible activity and the environment inserts it at
+    its earliest precedence- and resource-feasible start time.
     """
-    if n_steps < 1 or batch_size < 1 or n_epochs < 1 or graph_layers < 0:
-        raise ValueError("n_steps, batch_size, n_epochs, and graph_layers must be non-negative")
-    action_count = env.action_space.shape[0]
+    if n_steps < 1 or batch_size < 1 or n_epochs < 1 or gin_layers < 1:
+        raise ValueError("n_steps, batch_size, n_epochs, and gin_layers must be positive")
+    if not instances:
+        raise ValueError("instances must not be empty")
+    action_count = int(env.action_space.n)
     base_env = env.envs[0] if hasattr(env, "envs") else env
-    max_activities = getattr(base_env, "max_activities", action_count)
-    max_resources = getattr(base_env, "max_resources", None)
-    if max_resources is None:
-        obs_dim = int(env.observation_space.shape[0])
-        numerator = obs_dim - (6 + MAX_SUCCESSORS) * max_activities - 1
-        max_resources = numerator // (max_activities + 1)
+    max_activities = action_count
+    max_resources = int(env.observation_space.shape[0]) - 3 * max_activities - 2
+    if max_resources < max(instance.resource_count for instance in instances):
+        raise ValueError("environment observation cannot represent all instance resources")
+    max_successors = getattr(base_env, "max_successors", MAX_SUCCESSORS)
+    static_cache = build_static_graph_cache(
+        instances,
+        max_activities=max_activities,
+        max_resources=max_resources,
+        max_successors=max_successors,
+    )
     return PPO(
-        "MlpPolicy",
+        GINActorCriticPolicy,
         env,
         learning_rate=3e-4,
         n_steps=n_steps,
@@ -63,17 +112,15 @@ def create_ppo(
         clip_range=0.2,
         ent_coef=0.01,
         policy_kwargs={
-            "net_arch": {"pi": [64, 64], "vf": [64, 64]},
-            "features_extractor_class": RCMPSPStructuredExtractor,
+            "features_extractor_class": SharedDirectedGINExtractor,
             "features_extractor_kwargs": {
                 "max_activities": max_activities,
                 "max_resources": max_resources,
-                "max_successors": getattr(base_env, "max_successors", MAX_SUCCESSORS),
-                # Scatter/gather message passing dominates CPU PPO updates on
-                # these small instances. Keep it configurable for ablations.
-                "graph_layers": graph_layers,
-                "embedding_dim": 8,
-                "hidden_dim": 32,
+                "static_cache": static_cache,
+                "max_successors": max_successors,
+                "gin_layers": gin_layers,
+                "embedding_dim": 32,
+                "hidden_dim": 64,
                 "global_dim": 16,
             },
         },
@@ -110,6 +157,20 @@ def evaluate_paths(
     """Evaluate a padded multi-instance policy once for each supplied path."""
     from src.environments.multi_instance import MultiInstanceRCMPSPEnv
 
+    if not paths:
+        return []
+    extractor = model.policy.features_extractor
+    if not isinstance(extractor, SharedDirectedGINExtractor):
+        raise TypeError("model does not use the RCMPSP static graph cache")
+    evaluation_instances = [parse_rcmp(path) for path in paths]
+    extractor.set_static_cache(
+        build_static_graph_cache(
+            evaluation_instances,
+            max_activities=reference_env.max_activities,
+            max_resources=reference_env.max_resources,
+            max_successors=extractor.max_successors,
+        )
+    )
     results = []
     for offset, path in enumerate(paths):
         env = MultiInstanceRCMPSPEnv(
@@ -117,7 +178,8 @@ def evaluate_paths(
             seed=seed + offset,
             max_activities=reference_env.max_activities,
             max_resources=reference_env.max_resources,
-            max_horizon=reference_env.max_horizon,
+            instance_indices=[offset],
+            catalog_size=extractor.instance_count,
         )
         info = run_policy_episode(model, env, seed=seed + offset)
         results.append((Path(path).name, float(info["makespan"])))

@@ -5,7 +5,11 @@ import numpy as np
 from gymnasium.utils.env_checker import check_env
 
 from src.core.rcmpsp import generate_schedule, parse_rcmp, validate_schedule
-from src.environments.rcmpsp_env import RCMPSPEnv, RESOURCE_UTILIZATION_WEIGHT
+from src.environments.rcmpsp_env import (
+    FIFO_RELATIVE_WEIGHT,
+    RCMPSPEnv,
+    RESOURCE_UTILIZATION_WEIGHT,
+)
 
 
 INSTANCE = Path("MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp")
@@ -26,7 +30,8 @@ class RcmpspEnvTest(unittest.TestCase):
         steps = 0
         rng = np.random.default_rng(11)
         while not terminated:
-            action = rng.uniform(-1.0, 1.0, env.action_space.shape).astype(np.float32)
+            eligible = np.flatnonzero(observation["eligible_mask"])
+            action = int(rng.choice(eligible))
             observation, reward, terminated, truncated, terminal_info = env.step(action)
             self.assertTrue(env.observation_space.contains(observation))
             self.assertFalse(truncated)
@@ -39,6 +44,7 @@ class RcmpspEnvTest(unittest.TestCase):
         expected_return = (
             -schedule.makespan / env.horizon
             + RESOURCE_UTILIZATION_WEIGHT * env._resource_utilization(schedule.makespan)
+            + FIFO_RELATIVE_WEIGHT * (env._fifo_makespan - schedule.makespan) / env.horizon
         )
         self.assertAlmostEqual(total_reward, expected_return)
         self.assertTrue(np.all(observation["activity_status"] == 2))
@@ -58,13 +64,13 @@ class RcmpspEnvTest(unittest.TestCase):
         instance = parse_rcmp(INSTANCE)
         env = RCMPSPEnv(instance)
         env.reset(seed=23)
-        priorities = np.random.default_rng(23).uniform(
-            -1.0, 1.0, env.action_space.shape
-        ).astype(np.float32)
+        priorities = np.random.default_rng(23).uniform(-1.0, 1.0, env.activity_count)
 
         terminated = False
         while not terminated:
-            _, _, terminated, _, _ = env.step(priorities)
+            eligible = np.flatnonzero(env._state.eligible_mask)
+            action = int(eligible[np.argmax(priorities[eligible])])
+            _, _, terminated, _, _ = env.step(action)
 
         priority_map = {
             activity_id: float(priorities[index])

@@ -28,16 +28,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-envs", type=int, default=16)
     parser.add_argument("--n-steps", type=int, default=256)
     parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--n-epochs", type=int, default=4)
+    parser.add_argument("--n-epochs", type=int, default=2)
     parser.add_argument(
-        "--graph-layers",
+        "--gin-layers",
         type=int,
-        default=0,
-        help="Precedence message-passing layers; 0 uses the faster structured MLP.",
+        default=2,
+        help="Number of directed GIN message-passing layers.",
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--torch-threads", type=int, default=1)
+    parser.add_argument("--torch-interop-threads", type=int, default=1)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/ppo_gnn"))
     parser.add_argument("--splits", type=Path, default=Path("splits.json"))
     parser.add_argument(
@@ -143,11 +144,13 @@ def main() -> None:
         or args.n_steps < 1
         or args.batch_size < 1
         or args.n_epochs < 1
-        or args.graph_layers < 0
+        or args.gin_layers < 1
+        or args.torch_threads < 1
+        or args.torch_interop_threads < 1
     ):
         raise ValueError(
             "timesteps, n-envs, n-steps, and batch-size must be positive; "
-            "n-epochs must be positive and graph-layers non-negative"
+            "n-epochs, gin-layers, and torch thread counts must be positive"
         )
     if args.exact_time_limit < 0:
         raise ValueError("--exact-time-limit must be non-negative")
@@ -155,19 +158,21 @@ def main() -> None:
         raise ValueError("--exact-workers must be positive")
     args.device = resolve_device(args.device)
     torch.set_num_threads(args.torch_threads)
+    torch.set_num_interop_threads(args.torch_interop_threads)
     set_random_seed(args.seed)
 
     splits = make_splits()
     write_splits(args.splits)
     train_paths = splits["train"]
-    instances = [parse_rcmp(path) for path in train_paths]
-    max_activities = max(len(instance.activities) for instance in instances)
-    max_resources = max(instance.resource_count for instance in instances)
-    max_horizon = max(sum(activity.duration for activity in instance.activities.values()) for instance in instances)
+    catalog_paths = list(dict.fromkeys(path for paths in splits.values() for path in paths))
+    instances_by_path = {path: parse_rcmp(path) for path in catalog_paths}
+    train_instances = [instances_by_path[path] for path in train_paths]
+    all_instances = list(instances_by_path.values())
+    max_activities = max(len(instance.activities) for instance in all_instances)
+    max_resources = max(instance.resource_count for instance in all_instances)
     reference_env = SimpleNamespace(
         max_activities=max_activities,
         max_resources=max_resources,
-        max_horizon=max_horizon,
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     print(f"device={args.device}; envs={args.n_envs}; obs_dim={observation_size(max_activities, max_resources)}")
@@ -182,16 +187,28 @@ def main() -> None:
         )
         return
 
-    env_fns = [partial(make_multi_env, train_paths, args.seed + rank) for rank in range(args.n_envs)]
+    env_fns = [
+        partial(
+            make_multi_env,
+            train_paths,
+            args.seed + rank,
+            max_activities=max_activities,
+            max_resources=max_resources,
+            instance_indices=list(range(len(train_paths))),
+            catalog_size=len(train_paths),
+        )
+        for rank in range(args.n_envs)
+    ]
     env = make_vector_env(env_fns, parallel=args.n_envs > 1)
     model = create_ppo(
         env,
+        instances=train_instances,
         seed=args.seed,
         device=args.device,
         n_steps=args.n_steps,
         batch_size=args.batch_size,
         n_epochs=args.n_epochs,
-        graph_layers=args.graph_layers,
+        gin_layers=args.gin_layers,
         tensorboard_log=str(args.output_dir / "tensorboard"),
     )
     try:

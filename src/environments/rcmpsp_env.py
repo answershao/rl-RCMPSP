@@ -1,4 +1,4 @@
-"""Gymnasium environment for priority-based RCMPSP schedule construction."""
+"""Gymnasium environment for activity-selection RCMPSP scheduling."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from src.core.rcmpsp import (
 
 RESOURCE_UTILIZATION_WEIGHT = 0.1
 FIFO_RELATIVE_WEIGHT = 0.25
+INVALID_ACTION_PENALTY = -1.0
 
 
 @dataclass
@@ -37,6 +38,7 @@ class _ScheduleState:
     eligible_mask: np.ndarray
     current_time: int = 0
     resource_work: int = 0
+    invalid_action_penalty: float = 0.0
     terminated: bool = False
 
     @classmethod
@@ -57,15 +59,16 @@ class _ScheduleState:
         self.eligible_mask[:] = self.remaining_predecessors == 0
         self.current_time = 0
         self.resource_work = 0
+        self.invalid_action_penalty = 0.0
         self.terminated = False
 
 
-class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
-    """Construct a serial SSGS schedule using continuous activity priorities.
+class RCMPSPEnv(gym.Env[dict[str, np.ndarray], int]):
+    """Construct a serial SSGS schedule by selecting eligible activities.
 
-    One step selects the highest-priority precedence-eligible activity and
-    inserts it at its earliest resource-feasible time. The episode therefore
-    has exactly one scheduling decision per activity.
+    One step selects one precedence-eligible activity and inserts it at its
+    earliest resource-feasible time. The episode therefore has exactly one
+    scheduling decision per activity.
     """
 
     metadata = {"render_modes": []}
@@ -79,9 +82,7 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         self.resource_count = self.instance.resource_count
         self.horizon = sum(activity.duration for activity in self.instance.activities.values())
 
-        self.action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(self.activity_count,), dtype=np.float32
-        )
+        self.action_space = spaces.Discrete(self.activity_count)
         int_max = np.iinfo(np.int32).max
         capacities = np.asarray(self.instance.capacities, dtype=np.int32)
         max_duration = max((activity.duration for activity in self.instance.activities.values()), default=0)
@@ -137,27 +138,19 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         return observation, {"eligible_mask": observation["eligible_mask"].copy()}
 
     def step(
-        self, action: np.ndarray
+        self, action: int
     ) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, Any]]:
         state = self._state
         if state.terminated:
             raise RuntimeError("step() called after the episode terminated; call reset()")
-        # SB3 already emits bounded float32 actions. Avoid Gym's relatively
-        # expensive generic ``Box.contains`` path in this hot loop while still
-        # rejecting malformed direct callers.
-        if (
-            not isinstance(action, np.ndarray)
-            or action.dtype != np.float32
-            or action.shape != self.action_space.shape
-            or np.any(action < -1.0)
-            or np.any(action > 1.0)
-        ):
-            raise ValueError(f"action must be float32 with shape {self.action_space.shape} in [-1, 1]")
-
+        if not self.action_space.contains(action):
+            raise ValueError(f"action must be an integer in [0, {self.activity_count})")
+        requested_index = int(action)
         eligible_indices = np.flatnonzero(state.eligible_mask)
         if not eligible_indices.size:
             raise RuntimeError("precedence graph is cyclic or has a missing predecessor")
-        chosen_index = int(eligible_indices[np.argmax(action[eligible_indices])])
+        invalid_action = not state.eligible_mask[requested_index]
+        chosen_index = int(eligible_indices[0]) if invalid_action else requested_index
         chosen = self.activity_ids[chosen_index]
 
         old_time = state.current_time
@@ -184,6 +177,9 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         makespan_penalty = -float(state.current_time - old_time) / max(self.horizon, 1)
         utilization_bonus = RESOURCE_UTILIZATION_WEIGHT * utilization_gain
         reward = makespan_penalty + utilization_bonus
+        if invalid_action:
+            reward += INVALID_ACTION_PENALTY
+            state.invalid_action_penalty += INVALID_ACTION_PENALTY
         state.terminated = len(state.starts) == self.activity_count
 
         fifo_relative_bonus = 0.0
@@ -200,6 +196,7 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
             "finish": finish,
             "makespan": state.current_time,
             "eligible_mask": observation["eligible_mask"].copy(),
+            "invalid_action": invalid_action,
         }
         if state.terminated:
             info["schedule"] = self.schedule
@@ -216,10 +213,12 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
                         RESOURCE_UTILIZATION_WEIGHT * self._resource_utilization(state.current_time)
                     ),
                     "episode_fifo_relative_bonus": fifo_relative_bonus,
+                    "episode_invalid_action_penalty": state.invalid_action_penalty,
                     "episode_reward": (
                         -state.current_time / max(self.horizon, 1)
                         + RESOURCE_UTILIZATION_WEIGHT * self._resource_utilization(state.current_time)
                         + fifo_relative_bonus
+                        + state.invalid_action_penalty
                     ),
                 }
             )

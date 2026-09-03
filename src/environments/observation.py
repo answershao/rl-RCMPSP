@@ -1,8 +1,8 @@
-"""Observation encoding helpers shared by the Gymnasium environments."""
+"""Dynamic observations and static graph caches for RCMPSP policies."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -15,14 +15,13 @@ MAX_SUCCESSORS = 3
 
 @dataclass(frozen=True)
 class ObservationLayout:
-    """Named slices for the flattened RCMPSP observation contract."""
+    """Named slices for the compact, dynamic observation contract."""
 
     max_activities: int
     max_resources: int
-    max_successors: int = MAX_SUCCESSORS
 
     def __post_init__(self) -> None:
-        if min(self.max_activities, self.max_resources, self.max_successors) < 1:
+        if min(self.max_activities, self.max_resources) < 1:
             raise ValueError("observation dimensions must be positive")
 
     @property
@@ -34,95 +33,126 @@ class ObservationLayout:
         return slice(self.activity_status.stop, self.activity_status.stop + self.max_activities)
 
     @property
-    def durations(self) -> slice:
-        return slice(self.precedence_satisfied.stop, self.precedence_satisfied.stop + self.max_activities)
-
-    @property
     def eligible_mask(self) -> slice:
-        return slice(self.durations.stop, self.durations.stop + self.max_activities)
-
-    @property
-    def resource_demands(self) -> slice:
-        return slice(self.eligible_mask.stop, self.eligible_mask.stop + self.max_activities * self.max_resources)
-
-    @property
-    def successor_indices(self) -> slice:
-        return slice(self.resource_demands.stop, self.resource_demands.stop + self.max_activities * self.max_successors)
-
-    @property
-    def successor_counts(self) -> slice:
-        return slice(self.successor_indices.stop, self.successor_indices.stop + self.max_activities)
-
-    @property
-    def downstream_durations(self) -> slice:
-        return slice(self.successor_counts.stop, self.successor_counts.stop + self.max_activities)
-
-    @property
-    def global_features(self) -> slice:
-        return slice(self.downstream_durations.stop, self.downstream_durations.stop + self.max_resources + 1)
+        return slice(
+            self.precedence_satisfied.stop,
+            self.precedence_satisfied.stop + self.max_activities,
+        )
 
     @property
     def remaining_capacity(self) -> slice:
-        return slice(self.global_features.start, self.global_features.stop - 1)
+        return slice(self.eligible_mask.stop, self.eligible_mask.stop + self.max_resources)
 
     @property
     def current_time(self) -> int:
-        return self.global_features.stop - 1
+        return self.remaining_capacity.stop
+
+    @property
+    def global_features(self) -> slice:
+        return slice(self.remaining_capacity.start, self.current_time + 1)
+
+    @property
+    def instance_index(self) -> int:
+        return self.current_time + 1
 
     @property
     def size(self) -> int:
-        return self.global_features.stop
+        return self.instance_index + 1
 
 
 @dataclass(frozen=True)
-class ObservationTopology:
-    """Static precedence features used by flattened RCMPSP observations."""
+class StaticGraphCache:
+    """Normalized immutable graph data indexed by catalog instance."""
 
+    instance_names: tuple[str, ...]
+    durations: np.ndarray
+    resource_demands: np.ndarray
     successor_indices: np.ndarray
     successor_counts: np.ndarray
     downstream_durations: np.ndarray
+    activity_mask: np.ndarray
+
+    @property
+    def instance_count(self) -> int:
+        return int(self.durations.shape[0])
 
 
-def build_observation_topology(
-    instance: Instance,
-    activity_ids: tuple[tuple[int, int], ...],
+def build_static_graph_cache(
+    instances: Sequence[Instance],
     *,
     max_activities: int,
-    horizon: int,
-) -> ObservationTopology:
-    """Precompute normalized precedence features for an instance.
+    max_resources: int,
+    max_successors: int = MAX_SUCCESSORS,
+) -> StaticGraphCache:
+    """Build policy-side tensors for data that never changes during an episode."""
+    if not instances:
+        raise ValueError("instances must not be empty")
+    instance_count = len(instances)
+    instance_names = tuple(instance.name for instance in instances)
+    if len(set(instance_names)) != instance_count:
+        raise ValueError("static cache instance names must be unique")
+    durations = np.zeros((instance_count, max_activities), dtype=np.float32)
+    resource_demands = np.zeros(
+        (instance_count, max_activities, max_resources), dtype=np.float32
+    )
+    successor_indices = np.full(
+        (instance_count, max_activities, max_successors), -1, dtype=np.int64
+    )
+    successor_counts = np.zeros((instance_count, max_activities), dtype=np.float32)
+    downstream_durations = np.zeros((instance_count, max_activities), dtype=np.float32)
+    activity_mask = np.zeros((instance_count, max_activities), dtype=np.float32)
 
-    The result is independent of scheduling state and can be safely reused for
-    every observation in an episode.
-    """
-    activity_count = len(activity_ids)
-    if max_activities < activity_count:
-        raise ValueError("max_activities cannot be smaller than the instance")
+    for instance_index, instance in enumerate(instances):
+        activity_ids = tuple(sorted(instance.activities))
+        activity_count = len(activity_ids)
+        resource_count = instance.resource_count
+        if activity_count > max_activities or resource_count > max_resources:
+            raise ValueError("static cache dimensions are smaller than an instance")
+        activity_positions = {
+            activity_id: index for index, activity_id in enumerate(activity_ids)
+        }
+        horizon = max(sum(item.duration for item in instance.activities.values()), 1)
+        capacity_scale = np.maximum(np.asarray(instance.capacities, dtype=np.float32), 1.0)
+        longest_paths: dict[tuple[int, int], int] = {}
 
-    activity_index = {activity_id: index for index, activity_id in enumerate(activity_ids)}
-    successor_indices = np.zeros((max_activities, MAX_SUCCESSORS), dtype=np.float32)
-    successor_counts = np.zeros(max_activities, dtype=np.float32)
-    downstream_durations = np.zeros(max_activities, dtype=np.float32)
-    longest_path: dict[tuple[int, int], int] = {}
+        def downstream_duration(activity_id: tuple[int, int]) -> int:
+            if activity_id not in longest_paths:
+                activity = instance.activities[activity_id]
+                longest_paths[activity_id] = activity.duration + max(
+                    (downstream_duration(item) for item in activity.successors),
+                    default=0,
+                )
+            return longest_paths[activity_id]
 
-    def downstream_duration(activity_id: tuple[int, int]) -> int:
-        if activity_id not in longest_path:
+        activity_mask[instance_index, :activity_count] = 1.0
+        for node_index, activity_id in enumerate(activity_ids):
             activity = instance.activities[activity_id]
-            longest_path[activity_id] = activity.duration + max(
-                (downstream_duration(successor) for successor in activity.successors), default=0
+            if len(activity.successors) > max_successors:
+                raise ValueError(f"activity {activity_id} has too many successors")
+            durations[instance_index, node_index] = activity.duration / horizon
+            resource_demands[
+                instance_index, node_index, :resource_count
+            ] = np.asarray(activity.demand, dtype=np.float32) / capacity_scale
+            successor_counts[instance_index, node_index] = (
+                len(activity.successors) / max_successors
             )
-        return longest_path[activity_id]
+            downstream_durations[instance_index, node_index] = (
+                downstream_duration(activity_id) / horizon
+            )
+            for slot, successor in enumerate(activity.successors):
+                successor_indices[instance_index, node_index, slot] = (
+                    activity_positions[successor]
+                )
 
-    for index, activity_id in enumerate(activity_ids):
-        successors = instance.activities[activity_id].successors
-        if len(successors) > MAX_SUCCESSORS:
-            raise ValueError(f"activity {activity_id} has too many successors")
-        successor_counts[index] = len(successors) / MAX_SUCCESSORS
-        downstream_durations[index] = downstream_duration(activity_id) / max(horizon, 1)
-        for slot, successor in enumerate(successors):
-            successor_indices[index, slot] = (activity_index[successor] + 1) / max_activities
-
-    return ObservationTopology(successor_indices, successor_counts, downstream_durations)
+    return StaticGraphCache(
+        instance_names=instance_names,
+        durations=durations,
+        resource_demands=resource_demands,
+        successor_indices=successor_indices,
+        successor_counts=successor_counts,
+        downstream_durations=downstream_durations,
+        activity_mask=activity_mask,
+    )
 
 
 def flatten_observation(
@@ -130,71 +160,71 @@ def flatten_observation(
     capacities: tuple[int, ...],
     horizon: int,
     *,
+    instance_index: int = 0,
+    catalog_size: int = 1,
     max_activities: int | None = None,
     max_resources: int | None = None,
-    successor_indices: np.ndarray | None = None,
-    successor_counts: np.ndarray | None = None,
-    downstream_durations: np.ndarray | None = None,
     capacity_scale: np.ndarray | None = None,
     out: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Flatten and normalize an observation, optionally padding its axes."""
+    """Flatten only scheduling state that changes between decisions."""
     activity_count = observation["activity_status"].size
     resource_count = len(capacities)
     max_activities = max_activities or activity_count
     max_resources = max_resources or resource_count
     if max_activities < activity_count or max_resources < resource_count:
         raise ValueError("padding dimensions cannot be smaller than the observation")
+    if catalog_size < 1 or not 0 <= instance_index < catalog_size:
+        raise ValueError("instance_index must identify an entry in the static catalog")
 
     layout = ObservationLayout(max_activities, max_resources)
-    size = layout.size
     if out is None:
-        result = np.zeros(size, dtype=np.float32)
+        result = np.zeros(layout.size, dtype=np.float32)
     else:
-        if out.shape != (size,) or out.dtype != np.float32:
+        if out.shape != (layout.size,) or out.dtype != np.float32:
             raise ValueError("out must be a float32 array with the flattened observation shape")
         result = out
         result.fill(0.0)
-    # Normalize directly into the reusable output buffer to avoid per-step
-    # temporary arrays and the associated allocator/GC overhead.
-    np.multiply(observation["activity_status"], 0.5,
-                out=result[layout.activity_status.start:layout.activity_status.start + activity_count],
-                casting="unsafe")
-    np.copyto(result[layout.precedence_satisfied.start:layout.precedence_satisfied.start + activity_count],
-              observation["precedence_satisfied"], casting="unsafe")
-    np.multiply(observation["durations"], 1.0 / max(horizon, 1),
-                out=result[layout.durations.start:layout.durations.start + activity_count],
-                casting="unsafe")
-    np.copyto(result[layout.eligible_mask.start:layout.eligible_mask.start + activity_count],
-              observation["eligible_mask"], casting="unsafe")
+
+    np.multiply(
+        observation["activity_status"],
+        0.5,
+        out=result[layout.activity_status.start:layout.activity_status.start + activity_count],
+        casting="unsafe",
+    )
+    np.copyto(
+        result[
+            layout.precedence_satisfied.start:
+            layout.precedence_satisfied.start + activity_count
+        ],
+        observation["precedence_satisfied"],
+        casting="unsafe",
+    )
+    np.copyto(
+        result[layout.eligible_mask.start:layout.eligible_mask.start + activity_count],
+        observation["eligible_mask"],
+        casting="unsafe",
+    )
     capacities_array = (
         capacity_scale
         if capacity_scale is not None
         else np.maximum(np.asarray(capacities, dtype=np.float32), 1.0)
     )
-    np.divide(observation["resource_demands"], capacities_array,
-              out=result[layout.resource_demands].reshape(max_activities, max_resources)[:activity_count, :resource_count],
-              casting="unsafe")
-    if successor_indices is not None:
-        expected_shape = (max_activities, layout.max_successors)
-        if successor_indices.shape != expected_shape:
-            raise ValueError(f"expected successor indices with shape {expected_shape}")
-        result[layout.successor_indices] = successor_indices.ravel()
-    if successor_counts is not None:
-        if successor_counts.shape != (max_activities,):
-            raise ValueError(f"expected successor counts with shape {(max_activities,)}")
-        result[layout.successor_counts] = successor_counts
-    if downstream_durations is not None:
-        if downstream_durations.shape != (max_activities,):
-            raise ValueError(f"expected downstream durations with shape {(max_activities,)}")
-        result[layout.downstream_durations] = downstream_durations
-    np.divide(observation["remaining_capacity"], capacities_array,
-              out=result[layout.remaining_capacity.start:layout.remaining_capacity.start + resource_count],
-              casting="unsafe")
+    np.divide(
+        observation["remaining_capacity"],
+        capacities_array,
+        out=result[
+            layout.remaining_capacity.start:
+            layout.remaining_capacity.start + resource_count
+        ],
+        casting="unsafe",
+    )
     result[layout.current_time] = observation["current_time"][0] / max(horizon, 1)
+    # Zero is reserved for malformed/padded observations.
+    result[layout.instance_index] = (instance_index + 1) / catalog_size
     return result
 
 
 def observation_size(activity_count: int, resource_count: int) -> int:
-    """Return the vector length for a flattened RCMPSP observation."""
+    """Return the compact dynamic observation length."""
     return ObservationLayout(activity_count, resource_count).size
