@@ -15,7 +15,12 @@ from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.utils import set_random_seed
 
 from src.core.rcmpsp import parse_rcmp
-from src.environments.multi_instance import make_splits, write_splits
+from src.environments.multi_instance import (
+    DEFAULT_INSTANCES_ROOT,
+    make_splits,
+    partition_instance_catalog,
+    write_splits,
+)
 from src.environments.observation import build_static_graph_cache
 from src.scripts.train_ppo import resolve_device
 from src.training.ablation import EvaluationPoint, PeriodicMakespanCallback
@@ -38,6 +43,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--torch-threads", type=int, default=8)
     parser.add_argument("--torch-interop-threads", type=int, default=1)
+    parser.add_argument(
+        "--instances-root",
+        type=Path,
+        default=DEFAULT_INSTANCES_ROOT,
+        help="directory containing the .rcmp training instances",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/ppo_ablation"))
     parser.add_argument("--splits", type=Path, default=Path("outputs/ppo_ablation/splits.json"))
     return parser.parse_args()
@@ -125,12 +136,17 @@ def main() -> None:
     torch.set_num_threads(args.torch_threads)
     torch.set_num_interop_threads(args.torch_interop_threads)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    splits = make_splits()
-    write_splits(args.splits)
+    splits = make_splits(args.instances_root)
+    write_splits(args.splits, root=args.instances_root)
     evaluation_paths = splits[args.eval_split]
     if not evaluation_paths:
         raise ValueError(f"{args.eval_split} split is empty")
     train_paths = splits["train"]
+    if args.n_envs > len(train_paths):
+        raise ValueError(
+            f"--n-envs ({args.n_envs}) cannot exceed the number of training "
+            f"instances ({len(train_paths)})"
+        )
     catalog_paths = list(dict.fromkeys(path for paths in splits.values() for path in paths))
     instances_by_path = {path: parse_rcmp(path) for path in catalog_paths}
     train_instances = [instances_by_path[path] for path in train_paths]
@@ -157,17 +173,18 @@ def main() -> None:
         run_dir.mkdir(parents=True, exist_ok=True)
         print(f"starting {run_name}")
         set_random_seed(seed)
+        worker_catalogs = partition_instance_catalog(train_paths, args.n_envs)
         env_fns = [
             partial(
                 make_multi_env,
-                train_paths,
+                worker_paths,
                 seed + rank,
                 max_activities=max_activities,
                 max_resources=max_resources,
-                instance_indices=list(range(len(train_paths))),
+                instance_indices=worker_indices,
                 catalog_size=len(train_paths),
             )
-            for rank in range(args.n_envs)
+            for rank, (worker_paths, worker_indices) in enumerate(worker_catalogs)
         ]
         env = make_vector_env(env_fns, parallel=args.n_envs > 1)
         model = create_ppo(

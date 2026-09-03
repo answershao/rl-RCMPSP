@@ -10,7 +10,8 @@ import numpy as np
 from src.core.rcmpsp import Instance
 
 
-MAX_SUCCESSORS = 3
+# MPLIB2 10-project/500-activity dummy start nodes fan out to 24 activities.
+MAX_SUCCESSORS = 24
 
 
 @dataclass(frozen=True)

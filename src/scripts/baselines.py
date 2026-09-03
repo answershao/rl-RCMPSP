@@ -1,4 +1,4 @@
-"""Evaluate scheduling baselines on all two-project, j30 RCMPSP instances."""
+"""Evaluate scheduling baselines on the MPLIB2 10-project/500-activity training set."""
 
 from __future__ import annotations
 
@@ -18,20 +18,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--instances-root",
         type=Path,
-        default=Path("MPSPLIB/RCMP"),
-        help="directory containing MPSPLIB .rcmp instances",
+        default=Path("data/MPLIB2_train_10_500_5"),
+        help="directory containing the .rcmp baseline instances",
     )
     parser.add_argument(
         "--output-csv",
         type=Path,
-        default=Path("outputs/baselines_j30_a2/makespan_summary.csv"),
+        default=Path("outputs/baselines_mplib2_10_500_5/makespan_summary.csv"),
         help="path for the instance-by-method makespan matrix",
     )
     parser.add_argument("--seed", type=int, default=7, help="seed for the random-priority baseline")
     parser.add_argument(
+        "--max-instances",
+        type=int,
+        default=0,
+        help="evaluate at most this many instances; 0 evaluates all",
+    )
+    parser.add_argument(
         "--exact-time-limit",
         type=float,
-        default=60.0,
+        default=0.0,
         help="CP-SAT seconds per instance; use 0 to omit the CP-SAT column.",
     )
     parser.add_argument("--exact-workers", type=int, default=1, help="CP-SAT workers; 1 is reproducible.")
@@ -39,10 +45,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def find_instances(root: Path) -> list[Path]:
-    """Return the complete two-project, 30-activity benchmark set."""
-    paths = sorted(root.glob("mp_j30_a2_nr*.rcmp"))
-    if len(paths) != 5:
-        raise ValueError(f"expected five mp_j30_a2 instances under {root}, found {len(paths)}")
+    """Return every RCMP file in a prepared instance directory."""
+    paths = sorted(root.glob("*.rcmp"))
+    if not paths:
+        raise ValueError(f"no .rcmp instances found under {root}")
     return paths
 
 
@@ -105,7 +111,11 @@ def main() -> None:
         raise ValueError("--exact-time-limit must be non-negative")
     if args.exact_workers < 1:
         raise ValueError("--exact-workers must be positive")
+    if args.max_instances < 0:
+        raise ValueError("--max-instances must be non-negative")
     paths = find_instances(args.instances_root)
+    if args.max_instances:
+        paths = paths[:args.max_instances]
     rows = evaluate_instances(
         paths,
         seed=args.seed,

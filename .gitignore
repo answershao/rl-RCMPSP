@@ -31,3 +31,7 @@ outputs/**/*.csv
 .ruff_cache/
 .coverage
 htmlcov/
+
+
+# Large instance datasets
+data/

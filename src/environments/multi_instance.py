@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import gymnasium as gym
@@ -17,21 +18,44 @@ from src.environments.observation import (
     observation_size,
 )
 
-
-def make_splits(root: str | Path = "MPSPLIB/RCMP") -> dict[str, list[str]]:
-    """Return all five j30/a2 instances as the training set."""
-    files = sorted(Path(root).glob("mp_j30_*.rcmp"))
-    paths = [path for path in files if "mp_j30_a2_" in path.name]
-    if len(paths) < 5:
-        raise ValueError("expected five j30/a2 instances")
-    return {"train": [str(path) for path in paths[:5]], "validation": [], "test": []}
+DEFAULT_INSTANCES_ROOT = Path("data/MPLIB2_train_10_500_5")
 
 
-def write_splits(path: str | Path = "splits.json") -> Path:
+def make_splits(root: str | Path = DEFAULT_INSTANCES_ROOT) -> dict[str, list[str]]:
+    """Return every RCMP file in a prepared training-data directory."""
+    files = sorted(Path(root).glob("*.rcmp"))
+    if not files:
+        raise ValueError(f"no .rcmp instances found under {root}")
+    return {"train": [str(path) for path in files], "validation": [], "test": []}
+
+
+def write_splits(
+    path: str | Path = "splits.json",
+    root: str | Path = DEFAULT_INSTANCES_ROOT,
+) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(make_splits(), indent=2) + "\n")
+    path.write_text(json.dumps(make_splits(root), indent=2) + "\n")
     return path
+
+
+def partition_instance_catalog(
+    paths: Sequence[str], parts: int
+) -> list[tuple[list[str], list[int]]]:
+    """Split a training catalog into per-worker subsets with global indices."""
+    if parts < 1:
+        raise ValueError("parts must be positive")
+    if not paths:
+        raise ValueError("paths must not be empty")
+    if parts > len(paths):
+        raise ValueError("parts cannot exceed the number of paths")
+    return [
+        (
+            [str(paths[index]) for index in range(part, len(paths), parts)],
+            list(range(part, len(paths), parts)),
+        )
+        for part in range(parts)
+    ]
 
 
 class MultiInstanceRCMPSPEnv(gym.Env[np.ndarray, int]):

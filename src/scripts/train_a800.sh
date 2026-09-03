@@ -15,6 +15,7 @@ export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-LAZY}"
 export PYTHONUNBUFFERED=1
 
 exec python -m src.scripts.train_ppo \
+    --instances-root data/MPLIB2_train_10_500_5 \
     --n-envs 96 \
     --total-timesteps 6400000 \
     --n-steps 256 \

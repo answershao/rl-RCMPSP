@@ -16,7 +16,12 @@ from stable_baselines3.common.utils import set_random_seed
 
 from src.core.exact import solve_exact
 from src.core.rcmpsp import parse_rcmp
-from src.environments.multi_instance import make_splits, write_splits
+from src.environments.multi_instance import (
+    DEFAULT_INSTANCES_ROOT,
+    make_splits,
+    partition_instance_catalog,
+    write_splits,
+)
 from src.environments.observation import observation_size
 from src.training.callbacks import RCMPSPMetricsCallback
 from src.training.environments import make_multi_env, make_vector_env
@@ -61,6 +66,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--torch-threads", type=int, default=1)
     parser.add_argument("--torch-interop-threads", type=int, default=1)
+    parser.add_argument(
+        "--instances-root",
+        type=Path,
+        default=DEFAULT_INSTANCES_ROOT,
+        help="directory containing the .rcmp training instances",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/ppo_gnn"))
     parser.add_argument("--splits", type=Path, default=Path("splits.json"))
     parser.add_argument(
@@ -205,9 +216,14 @@ def main() -> None:
     configure_torch_runtime(args)
     set_random_seed(args.seed)
 
-    splits = make_splits()
-    write_splits(args.splits)
+    splits = make_splits(args.instances_root)
+    write_splits(args.splits, root=args.instances_root)
     train_paths = splits["train"]
+    if args.n_envs > len(train_paths):
+        raise ValueError(
+            f"--n-envs ({args.n_envs}) cannot exceed the number of training "
+            f"instances ({len(train_paths)})"
+        )
     catalog_paths = list(dict.fromkeys(path for paths in splits.values() for path in paths))
     instances_by_path = {path: parse_rcmp(path) for path in catalog_paths}
     train_instances = [instances_by_path[path] for path in train_paths]
@@ -238,17 +254,18 @@ def main() -> None:
         )
         return
 
+    worker_catalogs = partition_instance_catalog(train_paths, args.n_envs)
     env_fns = [
         partial(
             make_multi_env,
-            train_paths,
+            worker_paths,
             args.seed + rank,
             max_activities=max_activities,
             max_resources=max_resources,
-            instance_indices=list(range(len(train_paths))),
+            instance_indices=worker_indices,
             catalog_size=len(train_paths),
         )
-        for rank in range(args.n_envs)
+        for rank, (worker_paths, worker_indices) in enumerate(worker_catalogs)
     ]
     env = make_vector_env(
         env_fns,
