@@ -1,11 +1,28 @@
-"""PPO configuration for graph-aware RCMPSP experiments."""
+"""PPO configuration and evaluation helpers for RCMPSP experiments."""
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Protocol
+
+import numpy as np
 from stable_baselines3 import PPO
 
+from src.core.rcmpsp import (
+    Instance,
+    generate_schedule,
+    priority_fifo,
+    priority_shortest_duration,
+    random_priorities,
+)
 from src.environments.observation import MAX_SUCCESSORS
 from src.training.features import RCMPSPStructuredExtractor
+
+
+class PolicyEnvironment(Protocol):
+    def reset(self, *, seed: int | None = None): ...
+
+    def step(self, action): ...
 
 
 def create_ppo(
@@ -21,8 +38,8 @@ def create_ppo(
 ) -> PPO:
     """Create a PPO learner with precedence-message-passing features.
 
-    The continuous priority-vector action interface is shared with TD3, so
-    experiments differ only in learner and extractor configuration.
+    Actions are continuous activity-priority vectors, decoded into feasible
+    schedules by the environment.
     """
     if n_steps < 1 or batch_size < 1 or n_epochs < 1 or graph_layers < 0:
         raise ValueError("n_steps, batch_size, n_epochs, and graph_layers must be non-negative")
@@ -65,3 +82,43 @@ def create_ppo(
         tensorboard_log=tensorboard_log,
         verbose=1,
     )
+
+
+def run_policy_episode(model: PPO, env: PolicyEnvironment, *, seed: int | None = None) -> dict:
+    """Run one deterministic policy episode and return its terminal info."""
+    observation, _ = env.reset(seed=seed)
+    terminated = truncated = False
+    info = {}
+    while not (terminated or truncated):
+        action, _ = model.predict(observation, deterministic=True)
+        observation, _, terminated, truncated, info = env.step(action)
+    return info
+
+
+def baseline_makespans(instance: Instance, seed: int) -> dict[str, int]:
+    """Evaluate the deterministic scheduling baselines for one instance."""
+    return {
+        "fifo": generate_schedule(instance, priority_fifo).makespan,
+        "shortest": generate_schedule(instance, priority_shortest_duration).makespan,
+        "random": generate_schedule(instance, random_priorities(instance, seed)).makespan,
+    }
+
+
+def evaluate_paths(
+    model: PPO, paths: list[str], seed: int, reference_env
+) -> list[tuple[str, float]]:
+    """Evaluate a padded multi-instance policy once for each supplied path."""
+    from src.environments.multi_instance import MultiInstanceRCMPSPEnv
+
+    results = []
+    for offset, path in enumerate(paths):
+        env = MultiInstanceRCMPSPEnv(
+            [path],
+            seed=seed + offset,
+            max_activities=reference_env.max_activities,
+            max_resources=reference_env.max_resources,
+            max_horizon=reference_env.max_horizon,
+        )
+        info = run_policy_episode(model, env, seed=seed + offset)
+        results.append((Path(path).name, float(info["makespan"])))
+    return results

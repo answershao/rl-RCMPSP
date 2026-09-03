@@ -19,50 +19,6 @@
             ]
         },
         {
-            "name": "RCMPSP: Train SB3 TD3 (single-instance smoke test)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "src.scripts.train_td3",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "args": [
-                "--mode",
-                "single",
-                "--total-timesteps",
-                "10000",
-                "--output-dir",
-                "outputs/debug_td3_sb3"
-            ]
-        },
-        {
-            "name": "RCMPSP: Train SB3 TD3 (multi-instance, H20 allocation required)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "src.scripts.train_td3",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "args": [
-                "--mode",
-                "multi",
-                "--n-envs",
-                "32",
-                "--total-timesteps",
-                "500000",
-                "--buffer-size",
-                "50000",
-                "--batch-size",
-                "512",
-                "--device",
-                "cuda",
-                "--torch-threads",
-                "1",
-                "--seed",
-                "17",
-                "--output-dir",
-                "outputs/td3_multi_s17_t6400000_b500k"
-            ]
-        },
-        {
             "name": "RCMPSP: Train SB3 PPO-GNN (multi-instance)",
             "type": "debugpy",
             "request": "launch",

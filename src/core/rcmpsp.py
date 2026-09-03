@@ -125,7 +125,7 @@ def generate_schedule(
 ) -> Schedule:
     """Build a feasible schedule with a serial SGS and integer resource profiles.
 
-    The priority is the future TD3 action interface: a continuous score only
+    The priority is the PPO action interface: a continuous score only
     chooses among precedence-eligible activities. Resource allocation remains
     the instance's fixed integer demand throughout a non-preemptive activity.
     """

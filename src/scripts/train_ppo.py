@@ -19,8 +19,7 @@ from src.environments.multi_instance import make_splits, write_splits
 from src.environments.observation import observation_size
 from src.training.callbacks import RCMPSPMetricsCallback
 from src.training.environments import make_multi_env, make_vector_env
-from src.training.ppo import create_ppo
-from src.training.td3 import baseline_makespans, evaluate_paths
+from src.training.ppo import baseline_makespans, create_ppo, evaluate_paths
 
 
 def parse_args() -> argparse.Namespace:
