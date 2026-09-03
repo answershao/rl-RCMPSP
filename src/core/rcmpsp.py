@@ -162,7 +162,11 @@ def serial_sgs_insert(
     activity_id: ActivityId,
     starts: dict[ActivityId, int],
     finishes: dict[ActivityId, int],
-    usage: list[list[int]],
+    usage: list[list[int]] | np.ndarray,
+    *,
+    capacities_array: np.ndarray | None = None,
+    demand_array: np.ndarray | None = None,
+    capacity_limit_array: np.ndarray | None = None,
 ) -> tuple[int, int]:
     """Insert one precedence-eligible activity at its earliest feasible start.
 
@@ -178,10 +182,20 @@ def serial_sgs_insert(
     activity = instance.activities[activity_id]
     earliest = max((finishes[pred] for pred in instance.predecessors[activity_id]), default=0)
     start = _earliest_feasible_start(
-        usage, instance.capacities, activity.demand, activity.duration, earliest
+        usage,
+        capacities_array if capacities_array is not None else instance.capacities,
+        demand_array if demand_array is not None else activity.demand,
+        activity.duration,
+        earliest,
+        capacity_limit_array=capacity_limit_array,
     )
     finish = start + activity.duration
-    _reserve(usage, activity.demand, start, finish)
+    _reserve(
+        usage,
+        demand_array if demand_array is not None else activity.demand,
+        start,
+        finish,
+    )
     starts[activity_id] = start
     finishes[activity_id] = finish
     return start, finish
@@ -193,6 +207,8 @@ def _earliest_feasible_start(
     demand: tuple[int, ...],
     duration: int,
     earliest: int,
+    *,
+    capacity_limit_array: np.ndarray | None = None,
 ) -> int:
     if duration == 0:
         return earliest
@@ -200,10 +216,15 @@ def _earliest_feasible_start(
     if isinstance(usage, np.ndarray):
         capacities_array = np.asarray(capacities, dtype=np.int32)
         demand_array = np.asarray(demand, dtype=np.int32)
+        capacity_limit_array = (
+            capacities_array - demand_array
+            if capacity_limit_array is None
+            else capacity_limit_array
+        )
         while True:
             finish = start + duration
             window = usage[start:finish]
-            conflicts = np.any(window + demand_array > capacities_array, axis=1)
+            conflicts = np.any(window > capacity_limit_array, axis=1)
             if not np.any(conflicts):
                 return start
             # If the first conflicting instant is t, no start before the next
@@ -211,7 +232,7 @@ def _earliest_feasible_start(
             # long occupied stretches without changing the serial SGS result.
             conflict_time = start + int(np.flatnonzero(conflicts)[0])
             instant_ok = np.all(
-                usage[conflict_time:] + demand_array <= capacities_array, axis=1
+                usage[conflict_time:] <= capacity_limit_array, axis=1
             )
             available = np.flatnonzero(instant_ok)
             start = conflict_time + int(available[0]) if available.size else conflict_time + 1

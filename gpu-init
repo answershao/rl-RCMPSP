@@ -1,0 +1,33 @@
+# python env
+source /opt/conda/etc/profile.d/conda.sh
+conda activate torch-gpu
+pip install --upgrade pip
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu132
+pip3 install stable_baselines3 matplotlib tensorboard
+
+
+# ubuntu tools
+apt install git -y
+
+# install codex
+apt update && apt install -y curl gnupg
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs
+node -v
+npm -v
+
+npm install -g @openai/codex
+sk-9ZE7gtCDXAJTh3lXgVLjpelU7pLi3NlcyFSmKenqK4bwHEBn
+
+model_provider = "S"
+model = "gpt-5.6-terra"
+model_reasoning_effort = "medium"
+network_access = "enabled"
+disable_response_storage = true
+service_tier = "fast"
+
+[model_providers.S]
+name = "S"
+base_url = "https://api.0vo.dev/v1"
+wire_api = "responses"
+requires_openai_auth = true

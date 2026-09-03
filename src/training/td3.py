@@ -34,6 +34,7 @@ def create_td3(
     seed: int,
     buffer_size: int,
     batch_size: int = 256,
+    train_freq: int = 1,
     device: str = "auto",
     tensorboard_log: str | None = None,
 ) -> TD3:
@@ -64,9 +65,9 @@ def create_td3(
         buffer_size=buffer_size,
         learning_starts=batch_size,
         batch_size=batch_size,
-        # SB3 counts vector-environment steps here; train_freq=1 avoids
-        # accidentally reducing updates by another factor of n_envs.
-        train_freq=1,
+        # SB3 counts vector-environment steps here; tune train_freq to trade
+        # update frequency for environment throughput.
+        train_freq=train_freq,
         gradient_steps=1,
         tau=5e-3,
         gamma=0.99,

@@ -22,6 +22,7 @@ class FlattenRCMPSPObservation(gym.ObservationWrapper):
         size = observation_size(env.activity_count, env.resource_count)
         self.observation_space = spaces.Box(0.0, 1.0, shape=(size,), dtype=np.float32)
         self._flat_buffer = np.empty(size, dtype=np.float32)
+        self._capacity_scale = np.maximum(np.asarray(env.instance.capacities, dtype=np.float32), 1.0)
         self._topology = build_observation_topology(
             env.instance,
             env.activity_ids,
@@ -37,6 +38,7 @@ class FlattenRCMPSPObservation(gym.ObservationWrapper):
             successor_indices=self._topology.successor_indices,
             successor_counts=self._topology.successor_counts,
             downstream_durations=self._topology.downstream_durations,
+            capacity_scale=self._capacity_scale,
             out=self._flat_buffer,
         )
 

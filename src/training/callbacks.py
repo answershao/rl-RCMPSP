@@ -15,6 +15,7 @@ TERMINAL_METRICS = (
     "activity_count",
     "episode_makespan_penalty",
     "episode_utilization_bonus",
+    "episode_fifo_relative_bonus",
     "episode_reward",
 )
 

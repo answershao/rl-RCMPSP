@@ -6,6 +6,7 @@ import argparse
 import csv
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -13,7 +14,8 @@ from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 from stable_baselines3.common.utils import set_random_seed
 
 from src.core.rcmpsp import parse_rcmp
-from src.environments.multi_instance import MultiInstanceRCMPSPEnv, make_splits, write_splits
+from src.environments.multi_instance import make_splits, write_splits
+from src.environments.observation import observation_size
 from src.training.td3 import baseline_makespans, create_td3, evaluate_paths, run_policy_episode
 from src.training.callbacks import RCMPSPMetricsCallback
 from src.training.environments import make_multi_env, make_single_env, make_vector_env
@@ -30,20 +32,25 @@ def resolve_device(requested: str) -> str:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     elif requested == "cuda" or requested.startswith("cuda:"):
         if not torch.cuda.is_available():
-            raise RuntimeError(
-                "CUDA was requested but PyTorch cannot access a CUDA device. "
-                "Install a CUDA-enabled PyTorch build and check the scheduler allocation."
+            # Keep training usable on CPU-only hosts even when a CUDA device was
+            # requested by a shared/default launch configuration.
+            print(
+                f"CUDA device {requested!r} is unavailable; falling back to CPU. "
+                "Install a CUDA-enabled PyTorch build and check the scheduler allocation "
+                "if GPU execution is required."
             )
-        if requested.startswith("cuda:"):
+            device = "cpu"
+        else:
+            device = requested
+        if device.startswith("cuda:"):
             try:
-                index = torch.device(requested).index
+                index = torch.device(device).index
             except (RuntimeError, ValueError) as exc:
-                raise ValueError(f"invalid CUDA device: {requested}") from exc
+                raise ValueError(f"invalid CUDA device: {device}") from exc
             if index is None or index < 0 or index >= torch.cuda.device_count():
                 raise ValueError(
-                    f"{requested} is unavailable; visible CUDA devices: {torch.cuda.device_count()}"
+                    f"{device} is unavailable; visible CUDA devices: {torch.cuda.device_count()}"
                 )
-        device = requested
     elif requested == "cpu":
         device = requested
     else:
@@ -74,16 +81,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--n-envs",
         type=int,
-        default=64,
-        help="Parallel environments for --mode multi; use 1 for single-process debugging.",
+        default=16,
+        help="Parallel environments for --mode multi; tune to available CPU cores.",
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--buffer-size", type=int)
     parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument(
+        "--train-freq",
+        type=int,
+        default=1,
+        help="Environment steps between TD3 updates; 4 improves CPU FPS with fewer updates.",
+    )
     parser.add_argument("--device", default="auto", help="PyTorch device, e.g. cuda or cpu.")
     parser.add_argument(
         "--torch-threads",
         type=int,
+        default=1,
         help="CPU threads for the TD3 learner; environment workers remain separate processes.",
     )
     parser.add_argument("--output-dir", type=Path)
@@ -132,6 +146,9 @@ def evaluate_and_save_results(model, splits, seed: int, reference_env, output_di
                 f"random={baselines['random']} ({row['td3_vs_random_pct']:+.2f}%)"
             )
 
+    if not rows:
+        print("no validation/test instances configured; skipping per-instance evaluation")
+        return output_dir / "per_instance_results.csv"
     result_path = output_dir / "per_instance_results.csv"
     with result_path.open("w", newline="", encoding="ascii") as result_file:
         writer = csv.DictWriter(result_file, fieldnames=list(rows[0]))
@@ -159,6 +176,7 @@ def train_single(args: argparse.Namespace) -> None:
         seed=args.seed,
         buffer_size=args.buffer_size or 200_000,
         batch_size=args.batch_size,
+        train_freq=args.train_freq,
         device=args.device,
         tensorboard_log=str(output_dir / "tensorboard"),
     )
@@ -191,53 +209,67 @@ def train_multi(args: argparse.Namespace) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     splits = make_splits()
     write_splits(args.splits)
-    reference_env = MultiInstanceRCMPSPEnv(splits["train"], seed=args.seed)
+    # Only metadata is needed here; constructing another full environment would
+    # allocate schedule/resource buffers without participating in training.
+    train_instances = [parse_rcmp(path) for path in splits["train"]]
+    reference_env = SimpleNamespace(
+        max_activities=max(len(instance.activities) for instance in train_instances),
+        max_resources=max(instance.resource_count for instance in train_instances),
+        max_horizon=max(
+            sum(activity.duration for activity in instance.activities.values())
+            for instance in train_instances
+        ),
+    )
     env_fns = [partial(make_multi_env, splits["train"], args.seed + rank) for rank in range(args.n_envs)]
     env = make_vector_env(env_fns, parallel=args.n_envs > 1)
     buffer_size = args.buffer_size or 200_000
-    bytes_per_transition = (2 * reference_env.observation_space.shape[0] + reference_env.action_space.shape[0] + 3) * np.dtype(np.float32).itemsize
+    observation_dim = observation_size(reference_env.max_activities, reference_env.max_resources)
+    action_dim = reference_env.max_activities
+    bytes_per_transition = (2 * observation_dim + action_dim + 3) * np.dtype(np.float32).itemsize
     print(f"state_dim={env.observation_space.shape[0]} action_dim={env.action_space.shape[0]} buffer_size={buffer_size} estimated_replay={buffer_size * bytes_per_transition / 1024**3:.2f} GiB")
     model = create_td3(
         env,
         seed=args.seed,
         buffer_size=buffer_size,
         batch_size=args.batch_size,
+        train_freq=args.train_freq,
         device=args.device,
         tensorboard_log=str(output_dir / "tensorboard"),
     )
     print(f"parallel_envs={args.n_envs} total_timesteps={args.total_timesteps}")
-    eval_env_fn = partial(
-        make_multi_env,
-        splits["validation"],
-        args.seed + 10_000,
-        max_activities=reference_env.max_activities,
-        max_resources=reference_env.max_resources,
-        max_horizon=reference_env.max_horizon,
-    )
-    # EvalCallback checks that train and evaluation vector-environment types
-    # match. One subprocess is sufficient because evaluation is deterministic.
-    eval_env = make_vector_env([eval_env_fn], parallel=args.n_envs > 1)
+    eval_env = None
     try:
-        eval_callback = EvalCallback(
-            eval_env,
-            best_model_save_path=str(output_dir),
-            log_path=str(output_dir),
-            # SB3 calls callbacks once per vectorized step.
-            eval_freq=max(args.eval_freq // args.n_envs, 1),
-            n_eval_episodes=args.eval_episodes,
-            deterministic=True,
-            render=False,
-        )
-        callbacks = CallbackList([RCMPSPMetricsCallback(), eval_callback])
+        callbacks = [RCMPSPMetricsCallback()]
+        if splits["validation"]:
+            eval_env_fn = partial(
+                make_multi_env,
+                splits["validation"],
+                args.seed + 10_000,
+                max_activities=reference_env.max_activities,
+                max_resources=reference_env.max_resources,
+                max_horizon=reference_env.max_horizon,
+            )
+            # One subprocess is sufficient because evaluation is deterministic.
+            eval_env = make_vector_env([eval_env_fn], parallel=args.n_envs > 1)
+            callbacks.append(EvalCallback(
+                eval_env,
+                best_model_save_path=str(output_dir),
+                log_path=str(output_dir),
+                eval_freq=max(args.eval_freq // args.n_envs, 1),
+                n_eval_episodes=args.eval_episodes,
+                deterministic=True,
+                render=False,
+            ))
         model.learn(
             total_timesteps=args.total_timesteps,
-            callback=callbacks,
+            callback=CallbackList(callbacks),
             log_interval=args.log_interval,
             progress_bar=False,
         )
     finally:
         env.close()
-        eval_env.close()
+        if eval_env is not None:
+            eval_env.close()
     model.save(str(output_dir / "final_model"))
 
     evaluation_model = best_checkpoint_or_final(model, output_dir, args.device)
@@ -253,6 +285,8 @@ def main() -> None:
         raise ValueError("--buffer-size must be at least 1")
     if args.batch_size < 1:
         raise ValueError("--batch-size must be at least 1")
+    if args.train_freq < 1:
+        raise ValueError("--train-freq must be at least 1")
     if args.eval_freq < 1:
         raise ValueError("--eval-freq must be at least 1")
     if args.eval_episodes < 1:

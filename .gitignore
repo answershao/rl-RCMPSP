@@ -23,6 +23,7 @@ outputs/**/*.png
 outputs/**/*.zip
 outputs/**/*.npz
 outputs/**/events.out.tfevents.*
+outputs/**/*.csv
 
 # Test and tooling caches
 .pytest_cache/

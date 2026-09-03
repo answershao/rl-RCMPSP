@@ -21,20 +21,12 @@ from src.environments.observation import (
 
 
 def make_splits(root: str | Path = "MPSPLIB/RCMP") -> dict[str, list[str]]:
-    """Return a deterministic 3/1/1 split within each j30 project scale."""
+    """Return all five j30/a2 instances as the training set."""
     files = sorted(Path(root).glob("mp_j30_*.rcmp"))
-    groups = {
-        scale: [path for path in files if f"mp_j30_{scale}_" in path.name]
-        for scale in ("a2", "a5", "a10", "a20")
-    }
-    if any(len(paths) < 5 for paths in groups.values()):
-        raise ValueError("expected five instances for each j30 scale: a2, a5, a10, a20")
-    splits = {"train": [], "validation": [], "test": []}
-    for paths in groups.values():
-        splits["train"].extend(str(path) for path in paths[:3])
-        splits["validation"].append(str(paths[3]))
-        splits["test"].append(str(paths[4]))
-    return splits
+    paths = [path for path in files if "mp_j30_a2_" in path.name]
+    if len(paths) < 5:
+        raise ValueError("expected five j30/a2 instances")
+    return {"train": [str(path) for path in paths[:5]], "validation": [], "test": []}
 
 
 def write_splits(path: str | Path = "splits.json") -> Path:
@@ -61,14 +53,21 @@ class MultiInstanceRCMPSPEnv(gym.Env[np.ndarray, np.ndarray]):
         self.action_space = spaces.Box(-1.0, 1.0, (self.max_activities,), dtype=np.float32)
         feature_size = observation_size(self.max_activities, self.max_resources)
         self.observation_space = spaces.Box(0.0, 1.0, (feature_size,), dtype=np.float32)
+        # Reuse environment objects across episodes; reset only clears mutable
+        # scheduling state and avoids repeated allocation of large buffers.
+        self._envs = [RCMPSPEnv(instance) for instance in self.instances]
         self._env: RCMPSPEnv | None = None
         self._flat_buffers: dict[int, np.ndarray] = {}
         self._topologies: dict[int, ObservationTopology] = {}
+        self._capacity_scales = {
+            index: np.maximum(np.asarray(instance.capacities, dtype=np.float32), 1.0)
+            for index, instance in enumerate(self.instances)
+        }
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         index = int(self.np_random.integers(len(self.instances)))
-        self._env = RCMPSPEnv(self.instances[index])
+        self._env = self._envs[index]
         observation, info = self._env.reset(seed=seed)
         self._active_index = index
         return self._encode(observation), {**info, "instance": self.instance_paths[index].name}
@@ -115,5 +114,6 @@ class MultiInstanceRCMPSPEnv(gym.Env[np.ndarray, np.ndarray]):
             successor_indices=topology.successor_indices,
             successor_counts=topology.successor_counts,
             downstream_durations=topology.downstream_durations,
+            capacity_scale=self._capacity_scales[self._active_index],
             out=buffer,
         )

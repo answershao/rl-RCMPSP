@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from src.core.exact import solve_exact
 from src.core.rcmpsp import generate_schedule, parse_rcmp, priority_fifo, priority_shortest_duration, random_priorities
 from src.visualization.aon import plot_aon
 from src.visualization.gantt import plot_gantt
@@ -20,6 +21,13 @@ def main() -> None:
         help="path to an MPSPLIB .rcmp instance",
     )
     parser.add_argument("--seed", type=int, default=7, help="seed for the random-priority baseline")
+    parser.add_argument(
+        "--exact-time-limit",
+        type=float,
+        default=60.0,
+        help="CP-SAT seconds per instance; use 0 to skip exact solving.",
+    )
+    parser.add_argument("--exact-workers", type=int, default=1, help="CP-SAT workers; 1 is reproducible.")
     parser.add_argument(
         "--baseline",
         choices=("fifo", "shortest", "random"),
@@ -50,6 +58,16 @@ def main() -> None:
     for name, priority in baselines.items():
         schedule = generate_schedule(instance, priority)
         print(f"{name}: makespan={schedule.makespan}")
+    if args.exact_time_limit < 0:
+        parser.error("--exact-time-limit must be non-negative")
+    if args.exact_time_limit:
+        exact = solve_exact(
+            instance, time_limit=args.exact_time_limit, workers=args.exact_workers
+        )
+        print(
+            f"CP-SAT: makespan={exact.schedule.makespan}; status={exact.status}; "
+            f"best_bound={exact.best_bound:.0f}; wall_time={exact.wall_time:.2f}s"
+        )
 
     if args.gantt:
         priority = {

@@ -29,7 +29,7 @@
                 "--mode",
                 "single",
                 "--total-timesteps",
-                "1280",
+                "10000",
                 "--output-dir",
                 "outputs/debug_td3_sb3"
             ]
@@ -45,9 +45,9 @@
                 "--mode",
                 "multi",
                 "--n-envs",
-                "16",
+                "32",
                 "--total-timesteps",
-                "640000",
+                "500000",
                 "--buffer-size",
                 "50000",
                 "--batch-size",
@@ -55,11 +55,39 @@
                 "--device",
                 "cuda",
                 "--torch-threads",
-                "8",
+                "1",
                 "--seed",
                 "17",
                 "--output-dir",
                 "outputs/td3_multi_s17_t6400000_b500k"
+            ]
+        },
+        {
+            "name": "RCMPSP: Train SB3 PPO-GNN (multi-instance)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src.scripts.train_ppo",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "--n-envs",
+                "16",
+                "--total-timesteps",
+                "100000",
+                "--batch-size",
+                "256",
+                "--n-steps",
+                "512",
+                "--n-epochs",
+                "4",
+                "--device",
+                "auto",
+                "--torch-threads",
+                "1",
+                "--seed",
+                "17",
+                "--output-dir",
+                "outputs/ppo_gnn_launch"
             ]
         }
     ]

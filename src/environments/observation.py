@@ -135,6 +135,7 @@ def flatten_observation(
     successor_indices: np.ndarray | None = None,
     successor_counts: np.ndarray | None = None,
     downstream_durations: np.ndarray | None = None,
+    capacity_scale: np.ndarray | None = None,
     out: np.ndarray | None = None,
 ) -> np.ndarray:
     """Flatten and normalize an observation, optionally padding its axes."""
@@ -154,26 +155,26 @@ def flatten_observation(
             raise ValueError("out must be a float32 array with the flattened observation shape")
         result = out
         result.fill(0.0)
-    status = observation["activity_status"].astype(np.float32) / 2.0
-    precedence = observation["precedence_satisfied"].astype(np.float32)
-    durations = observation["durations"].astype(np.float32) / max(horizon, 1)
-    eligible = observation["eligible_mask"].astype(np.float32)
-    demands = observation["resource_demands"].astype(np.float32)
-    demands /= np.maximum(np.asarray(capacities, dtype=np.float32), 1.0)
-    remaining = observation["remaining_capacity"].astype(np.float32)
-    remaining /= np.maximum(np.asarray(capacities, dtype=np.float32), 1.0)
-    current_time = observation["current_time"].astype(np.float32) / max(horizon, 1)
-
-    for field, values in (
-        (layout.activity_status, status),
-        (layout.precedence_satisfied, precedence),
-        (layout.durations, durations),
-        (layout.eligible_mask, eligible),
-    ):
-        result[field.start : field.start + activity_count] = values
-    result[layout.resource_demands].reshape(
-        max_activities, max_resources
-    )[:activity_count, :resource_count] = demands
+    # Normalize directly into the reusable output buffer to avoid per-step
+    # temporary arrays and the associated allocator/GC overhead.
+    np.multiply(observation["activity_status"], 0.5,
+                out=result[layout.activity_status.start:layout.activity_status.start + activity_count],
+                casting="unsafe")
+    np.copyto(result[layout.precedence_satisfied.start:layout.precedence_satisfied.start + activity_count],
+              observation["precedence_satisfied"], casting="unsafe")
+    np.multiply(observation["durations"], 1.0 / max(horizon, 1),
+                out=result[layout.durations.start:layout.durations.start + activity_count],
+                casting="unsafe")
+    np.copyto(result[layout.eligible_mask.start:layout.eligible_mask.start + activity_count],
+              observation["eligible_mask"], casting="unsafe")
+    capacities_array = (
+        capacity_scale
+        if capacity_scale is not None
+        else np.maximum(np.asarray(capacities, dtype=np.float32), 1.0)
+    )
+    np.divide(observation["resource_demands"], capacities_array,
+              out=result[layout.resource_demands].reshape(max_activities, max_resources)[:activity_count, :resource_count],
+              casting="unsafe")
     if successor_indices is not None:
         expected_shape = (max_activities, layout.max_successors)
         if successor_indices.shape != expected_shape:
@@ -187,8 +188,10 @@ def flatten_observation(
         if downstream_durations.shape != (max_activities,):
             raise ValueError(f"expected downstream durations with shape {(max_activities,)}")
         result[layout.downstream_durations] = downstream_durations
-    result[layout.remaining_capacity.start : layout.remaining_capacity.start + resource_count] = remaining
-    result[layout.current_time] = current_time[0]
+    np.divide(observation["remaining_capacity"], capacities_array,
+              out=result[layout.remaining_capacity.start:layout.remaining_capacity.start + resource_count],
+              casting="unsafe")
+    result[layout.current_time] = observation["current_time"][0] / max(horizon, 1)
     return result
 
 

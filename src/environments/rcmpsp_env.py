@@ -10,10 +10,20 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from src.core.rcmpsp import ActivityId, Instance, Schedule, parse_rcmp, serial_sgs_insert, validate_schedule
+from src.core.rcmpsp import (
+    ActivityId,
+    Instance,
+    Schedule,
+    generate_schedule,
+    parse_rcmp,
+    priority_fifo,
+    serial_sgs_insert,
+    validate_schedule,
+)
 
 
 RESOURCE_UTILIZATION_WEIGHT = 0.1
+FIFO_RELATIVE_WEIGHT = 0.25
 
 
 @dataclass
@@ -26,6 +36,7 @@ class _ScheduleState:
     remaining_predecessors: np.ndarray
     eligible_mask: np.ndarray
     current_time: int = 0
+    resource_work: int = 0
     terminated: bool = False
 
     @classmethod
@@ -45,6 +56,7 @@ class _ScheduleState:
         self.remaining_predecessors[:] = predecessor_counts
         self.eligible_mask[:] = self.remaining_predecessors == 0
         self.current_time = 0
+        self.resource_work = 0
         self.terminated = False
 
 
@@ -95,7 +107,12 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         self._demands = np.asarray(
             [self.instance.activities[item].demand for item in self.activity_ids], dtype=np.int32
         )
+        self._resource_work_by_activity = self._durations * self._demands.sum(axis=1)
         self._capacities = capacities
+        self._capacities_array = capacities.astype(np.int32, copy=False)
+        self._capacity_limits = self._capacities_array - self._demands
+        self._capacity_total = int(np.sum(capacities))
+        self._fifo_makespan = generate_schedule(self.instance, priority_fifo).makespan
         self._predecessor_counts = np.asarray(
             [len(self.instance.predecessors[activity_id]) for activity_id in self.activity_ids],
             dtype=np.int32,
@@ -125,7 +142,16 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         state = self._state
         if state.terminated:
             raise RuntimeError("step() called after the episode terminated; call reset()")
-        if not self.action_space.contains(action):
+        # SB3 already emits bounded float32 actions. Avoid Gym's relatively
+        # expensive generic ``Box.contains`` path in this hot loop while still
+        # rejecting malformed direct callers.
+        if (
+            not isinstance(action, np.ndarray)
+            or action.dtype != np.float32
+            or action.shape != self.action_space.shape
+            or np.any(action < -1.0)
+            or np.any(action > 1.0)
+        ):
             raise ValueError(f"action must be float32 with shape {self.action_space.shape} in [-1, 1]")
 
         eligible_indices = np.flatnonzero(state.eligible_mask)
@@ -137,8 +163,12 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         old_time = state.current_time
         old_utilization = self._resource_utilization(old_time)
         start, finish = serial_sgs_insert(
-            self.instance, chosen, state.starts, state.finishes, state.usage
+            self.instance, chosen, state.starts, state.finishes, state.usage,
+            capacities_array=self._capacities_array,
+            demand_array=self._demands[chosen_index],
+            capacity_limit_array=self._capacity_limits[chosen_index],
         )
+        state.resource_work += int(self._resource_work_by_activity[chosen_index])
         state.eligible_mask[chosen_index] = False
         for successor in self.instance.activities[chosen].successors:
             successor_index = self.activity_index[successor]
@@ -155,6 +185,13 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         utilization_bonus = RESOURCE_UTILIZATION_WEIGHT * utilization_gain
         reward = makespan_penalty + utilization_bonus
         state.terminated = len(state.starts) == self.activity_count
+
+        fifo_relative_bonus = 0.0
+        if state.terminated:
+            fifo_relative_bonus = FIFO_RELATIVE_WEIGHT * (
+                self._fifo_makespan - state.current_time
+            ) / max(self.horizon, 1)
+            reward += fifo_relative_bonus
 
         observation = self._observation()
         info: dict[str, Any] = {
@@ -178,9 +215,11 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
                     "episode_utilization_bonus": (
                         RESOURCE_UTILIZATION_WEIGHT * self._resource_utilization(state.current_time)
                     ),
+                    "episode_fifo_relative_bonus": fifo_relative_bonus,
                     "episode_reward": (
                         -state.current_time / max(self.horizon, 1)
                         + RESOURCE_UTILIZATION_WEIGHT * self._resource_utilization(state.current_time)
+                        + fifo_relative_bonus
                     ),
                 }
             )
@@ -203,8 +242,8 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
         """Return aggregate capacity utilization over the current frontier."""
         if end_time <= 0:
             return 0.0
-        capacity = float(end_time * np.sum(self._capacities))
-        used = float(np.sum(self._state.usage[:end_time]))
+        capacity = float(end_time * self._capacity_total)
+        used = float(self._state.resource_work)
         return used / capacity if capacity > 0 else 0.0
 
     def _observation(self) -> dict[str, np.ndarray]:
