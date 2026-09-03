@@ -2,20 +2,19 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "RCMPSP: Baseline schedules",
+            "name": "RCMPSP: Baselines on all 2-project j30 instances",
             "type": "debugpy",
             "request": "launch",
             "module": "src.scripts.baselines",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "args": [
-                "MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp",
-                "--baseline",
-                "random",
-                "--gantt",
-                "outputs/debug_baseline_gantt.png",
-                "--aon",
-                "outputs/debug_baseline_aon.png"
+                "--seed",
+                "17",
+                "--exact-time-limit",
+                "60",
+                "--output-csv",
+                "outputs/baselines_j30_a2/makespan_summary.csv"
             ]
         },
         {
@@ -27,7 +26,7 @@
             "cwd": "${workspaceFolder}",
             "args": [
                 "--n-envs",
-                "16",
+                "64",
                 "--total-timesteps",
                 "100000",
                 "--batch-size",
@@ -42,6 +41,27 @@
                 "1",
                 "--seed",
                 "17",
+                "--output-dir",
+                "outputs/ppo_gnn_launch"
+            ]
+        },
+        {
+            "name": "RCMPSP: Evaluate PPO on all 2-project j30 instances",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src.scripts.train_ppo",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "--evaluate-only",
+                "--device",
+                "auto",
+                "--torch-threads",
+                "1",
+                "--seed",
+                "17",
+                "--exact-time-limit",
+                "60",
                 "--output-dir",
                 "outputs/ppo_gnn_launch"
             ]
