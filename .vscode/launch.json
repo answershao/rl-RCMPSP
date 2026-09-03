@@ -2,29 +2,35 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "RCMPSP: Baselines on all 2-project j30 instances",
+            "name": "RCMPSP: Baselines on MPLIB2 10/500/5 (5 instances)",
             "type": "debugpy",
             "request": "launch",
             "module": "src.scripts.baselines",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "args": [
+                "--instances-root",
+                "data/MPLIB2_train_10_500_5",
                 "--seed",
                 "17",
+                "--max-instances",
+                "5",
                 "--exact-time-limit",
                 "60",
                 "--output-csv",
-                "outputs/baselines_j30_a2/makespan_summary.csv"
+                "outputs/baselines_mplib2_10_500_5/makespan_summary.csv"
             ]
         },
         {
-            "name": "RCMPSP: Train PPO-GIN (A800 throughput)",
+            "name": "RCMPSP: Train PPO-GIN on MPLIB2 10/500/5 (A800)",
             "type": "debugpy",
             "request": "launch",
             "module": "src.scripts.train_ppo",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "args": [
+                "--instances-root",
+                "data/MPLIB2_train_10_500_5",
                 "--n-envs",
                 "96",
                 "--total-timesteps",
@@ -58,6 +64,8 @@
                 "17",
                 "--splits",
                 "outputs/ppo_gin_a800/splits.json",
+                "--eval-max-instances",
+                "5",
                 "--exact-time-limit",
                 "60",
                 "--exact-workers",
@@ -67,13 +75,15 @@
             ]
         },
         {
-            "name": "RCMPSP: Ablate GIN layers and PPO epochs",
+            "name": "RCMPSP: Ablate GIN layers and PPO epochs on MPLIB2 10/500/5",
             "type": "debugpy",
             "request": "launch",
             "module": "src.scripts.ablate_ppo",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "args": [
+                "--instances-root",
+                "data/MPLIB2_train_10_500_5",
                 "--gin-layers",
                 "2",
                 "3",
@@ -92,6 +102,8 @@
                 "100000",
                 "--eval-split",
                 "train",
+                "--eval-max-instances",
+                "5",
                 "--device",
                 "cpu",
                 "--torch-threads",
@@ -107,14 +119,18 @@
             ]
         },
         {
-            "name": "RCMPSP: Evaluate PPO-GIN on all 2-project j30 instances",
+            "name": "RCMPSP: Evaluate PPO-GIN on MPLIB2 10/500/5 (5 instances)",
             "type": "debugpy",
             "request": "launch",
             "module": "src.scripts.train_ppo",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "args": [
+                "--instances-root",
+                "data/MPLIB2_train_10_500_5",
                 "--evaluate-only",
+                "--eval-max-instances",
+                "5",
                 "--device",
                 "auto",
                 "--torch-threads",

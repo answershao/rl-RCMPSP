@@ -49,6 +49,12 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_INSTANCES_ROOT,
         help="directory containing the .rcmp training instances",
     )
+    parser.add_argument(
+        "--eval-max-instances",
+        type=int,
+        default=0,
+        help="evaluate at most N instances; 0 evaluates the selected split",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/ppo_ablation"))
     parser.add_argument("--splits", type=Path, default=Path("outputs/ppo_ablation/splits.json"))
     return parser.parse_args()
@@ -128,6 +134,8 @@ def main() -> None:
     ]
     if any(value < 1 for value in positive_values):
         raise ValueError("all numeric training parameters must be positive")
+    if args.eval_max_instances < 0:
+        raise ValueError("--eval-max-instances must be non-negative")
     rollout_size = args.n_envs * args.n_steps
     if rollout_size % args.batch_size:
         raise ValueError("batch-size must divide n-envs * n-steps")
@@ -141,6 +149,8 @@ def main() -> None:
     evaluation_paths = splits[args.eval_split]
     if not evaluation_paths:
         raise ValueError(f"{args.eval_split} split is empty")
+    if args.eval_max_instances:
+        evaluation_paths = evaluation_paths[:args.eval_max_instances]
     train_paths = splits["train"]
     if args.n_envs > len(train_paths):
         raise ValueError(

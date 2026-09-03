@@ -75,6 +75,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/ppo_gnn"))
     parser.add_argument("--splits", type=Path, default=Path("splits.json"))
     parser.add_argument(
+        "--eval-max-instances",
+        type=int,
+        default=0,
+        help="evaluate at most N instances per split; 0 evaluates all",
+    )
+    parser.add_argument(
         "--evaluate-only",
         action="store_true",
         help="Skip training and evaluate output-dir/final_model.zip.",
@@ -123,8 +129,12 @@ def configure_torch_runtime(args: argparse.Namespace) -> None:
 
 def evaluate_and_save_results(model: PPO, splits: dict[str, list[str]], seed: int,
                               reference_env, output_dir: Path, exact_time_limit: float,
-                              exact_workers: int) -> Path:
+                              exact_workers: int, max_eval_instances: int = 0) -> Path:
     """Write one makespan matrix row for each evaluated RCMPSP instance."""
+    if max_eval_instances:
+        splits = {
+            split: paths[:max_eval_instances] for split, paths in splits.items()
+        }
     rows = []
     rows_by_split: dict[str, list[dict[str, int | str]]] = {
         split: [] for split in splits
@@ -209,6 +219,8 @@ def main() -> None:
         raise ValueError("--exact-time-limit must be non-negative")
     if args.exact_workers < 1:
         raise ValueError("--exact-workers must be positive")
+    if args.eval_max_instances < 0:
+        raise ValueError("--eval-max-instances must be non-negative")
     rollout_size = args.n_envs * args.n_steps
     if rollout_size % args.batch_size:
         raise ValueError("batch-size must divide n-envs * n-steps")
@@ -251,6 +263,7 @@ def main() -> None:
         evaluate_and_save_results(
             model, splits, args.seed, reference_env, args.output_dir,
             args.exact_time_limit, args.exact_workers,
+            max_eval_instances=args.eval_max_instances,
         )
         return
 
@@ -296,6 +309,7 @@ def main() -> None:
         evaluate_and_save_results(
             model, splits, args.seed, reference_env, args.output_dir,
             args.exact_time_limit, args.exact_workers,
+            max_eval_instances=args.eval_max_instances,
         )
     finally:
         env.close()
