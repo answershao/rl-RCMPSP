@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 import json
+from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -19,14 +21,84 @@ from src.environments.observation import (
 )
 
 DEFAULT_INSTANCES_ROOT = Path("data/MPLIB2_train_10_50_5")
+SPLIT_NAMES = ("train", "validation", "test")
+MPLIB2_GROUP_FIELDS = (
+    "set",
+    "J",
+    "I",
+    "K",
+    "a_I",
+    "SP",
+    "a_SP",
+    "MP",
+    "MF",
+    "CR",
+    "RD",
+    "PD",
+    "RS",
+    "a_RS",
+)
 
 
 def make_splits(root: str | Path = DEFAULT_INSTANCES_ROOT) -> dict[str, list[str]]:
-    """Return every RCMP file in a prepared training-data directory."""
-    files = sorted(Path(root).glob("*.rcmp"))
+    """Split every five-replicate MPLIB2 parameter group into 3/1/1 sets."""
+    root = Path(root)
+    files = {path.name: path for path in root.glob("*.rcmp")}
     if not files:
         raise ValueError(f"no .rcmp instances found under {root}")
-    return {"train": [str(path) for path in files], "validation": [], "test": []}
+    manifest = root / "instances.csv"
+    if not manifest.is_file():
+        raise ValueError(f"MPLIB2 instance manifest not found: {manifest}")
+
+    with manifest.open(newline="", encoding="utf-8-sig") as stream:
+        reader = csv.DictReader(stream, delimiter=";")
+        required_fields = {"Instance", "destination", *MPLIB2_GROUP_FIELDS}
+        missing_fields = required_fields - set(reader.fieldnames or ())
+        if missing_fields:
+            raise ValueError(
+                f"{manifest} is missing required fields: {sorted(missing_fields)}"
+            )
+        rows = list(reader)
+
+    groups: dict[tuple[str, ...], list[tuple[int, Path]]] = defaultdict(list)
+    manifest_files = set()
+    for row in rows:
+        filename = Path(row["destination"]).name
+        if filename in manifest_files:
+            raise ValueError(f"{manifest} contains duplicate instance {filename!r}")
+        if filename not in files:
+            raise ValueError(f"manifest instance not found under {root}: {filename}")
+        try:
+            instance_number = int(row["Instance"])
+        except ValueError as exc:
+            raise ValueError(
+                f"{manifest} contains invalid Instance value {row['Instance']!r}"
+            ) from exc
+        manifest_files.add(filename)
+        group_key = tuple(row[field] for field in MPLIB2_GROUP_FIELDS)
+        groups[group_key].append((instance_number, files[filename]))
+
+    unlisted_files = sorted(files.keys() - manifest_files)
+    if unlisted_files:
+        raise ValueError(
+            f"{manifest} does not list {len(unlisted_files)} RCMP files; "
+            f"first missing file: {unlisted_files[0]}"
+        )
+
+    splits = {name: [] for name in SPLIT_NAMES}
+    for group_key in sorted(groups):
+        group = sorted(groups[group_key])
+        if len(group) != 5:
+            parameters = dict(zip(MPLIB2_GROUP_FIELDS, group_key))
+            raise ValueError(
+                "expected five replicate instances per MPLIB2 parameter group, "
+                f"got {len(group)} for {parameters}"
+            )
+        paths = [str(path) for _, path in group]
+        splits["train"].extend(paths[:3])
+        splits["validation"].append(paths[3])
+        splits["test"].append(paths[4])
+    return splits
 
 
 def write_splits(

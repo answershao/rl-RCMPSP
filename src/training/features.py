@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 
+import numpy as np
 import torch as th
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from torch import nn
@@ -38,6 +39,27 @@ class DirectedGINLayer(nn.Module):
             + self.successor_projection(successor_sum)
         )
         return self.update(aggregate)
+
+
+def _aggregate_edge_messages(
+    embeddings: th.Tensor,
+    edge_sources: th.Tensor,
+    edge_targets: th.Tensor,
+    edge_mask: th.Tensor,
+) -> tuple[th.Tensor, th.Tensor]:
+    """Sum messages in both directions using only compact, real graph edges."""
+    embedding_dim = embeddings.shape[-1]
+    expanded_sources = edge_sources.unsqueeze(-1).expand(-1, -1, embedding_dim)
+    expanded_targets = edge_targets.unsqueeze(-1).expand(-1, -1, embedding_dim)
+    valid_edges = edge_mask.unsqueeze(-1).to(embeddings.dtype)
+    source_messages = embeddings.gather(1, expanded_sources) * valid_edges
+    target_messages = embeddings.gather(1, expanded_targets) * valid_edges
+
+    predecessor_sum = th.zeros_like(embeddings)
+    predecessor_sum.scatter_add_(1, expanded_targets, source_messages)
+    successor_sum = th.zeros_like(embeddings)
+    successor_sum.scatter_add_(1, expanded_sources, target_messages)
+    return predecessor_sum, successor_sum
 
 
 class SharedDirectedGINExtractor(BaseFeaturesExtractor):
@@ -121,6 +143,38 @@ class SharedDirectedGINExtractor(BaseFeaturesExtractor):
             else:
                 self.register_buffer(name, tensor)
 
+        # Keep successor_indices above for checkpoint compatibility, but use a
+        # compact edge list during message passing. Padding now scales with the
+        # largest real edge count instead of max_activities * max_successors.
+        valid_edges = static_cache.successor_indices >= 0
+        edge_counts = valid_edges.sum(axis=(1, 2))
+        max_edges = int(edge_counts.max(initial=0))
+        edge_sources = np.zeros((self.instance_count, max_edges), dtype=np.int64)
+        edge_targets = np.zeros((self.instance_count, max_edges), dtype=np.int64)
+        edge_mask = np.zeros((self.instance_count, max_edges), dtype=np.bool_)
+        source_slots = np.broadcast_to(
+            np.arange(self.max_activities, dtype=np.int64)[:, None],
+            static_cache.successor_indices.shape[1:],
+        )
+        for instance_index, edge_count in enumerate(edge_counts):
+            count = int(edge_count)
+            edge_sources[instance_index, :count] = source_slots[valid_edges[instance_index]]
+            edge_targets[instance_index, :count] = static_cache.successor_indices[
+                instance_index
+            ][valid_edges[instance_index]]
+            edge_mask[instance_index, :count] = True
+        compact_arrays = {
+            "static_edge_sources": edge_sources,
+            "static_edge_targets": edge_targets,
+            "static_edge_mask": edge_mask,
+        }
+        for name, array in compact_arrays.items():
+            tensor = th.from_numpy(array).to(device=device)
+            if name in self._buffers:
+                setattr(self, name, tensor)
+            else:
+                self.register_buffer(name, tensor, persistent=False)
+
     def _autocast(self, tensor: th.Tensor):
         if not tensor.is_cuda or self.mixed_precision == "none":
             return nullcontext()
@@ -145,7 +199,6 @@ class SharedDirectedGINExtractor(BaseFeaturesExtractor):
         ).clamp(min=0, max=self.instance_count - 1)
         durations = self.static_durations[instance_indices]
         demands = self.static_resource_demands[instance_indices]
-        successors = self.static_successor_indices[instance_indices]
         successor_counts = self.static_successor_counts[instance_indices]
         downstream_durations = self.static_downstream_durations[instance_indices]
         activity_mask = self.static_activity_mask[instance_indices]
@@ -169,27 +222,13 @@ class SharedDirectedGINExtractor(BaseFeaturesExtractor):
         valid_nodes = activity_mask.unsqueeze(-1)
         embeddings = embeddings * valid_nodes
 
-        valid_edges = (successors >= 0).unsqueeze(-1).to(embeddings.dtype)
-        successor_indices = successors.clamp(min=0, max=n - 1)
-        batch_size = embeddings.shape[0]
-        flat_indices = successor_indices.reshape(batch_size, -1)
+        edge_sources = self.static_edge_sources[instance_indices]
+        edge_targets = self.static_edge_targets[instance_indices]
+        edge_mask = self.static_edge_mask[instance_indices]
 
         for layer in self.gin_layers:
-            successor_embeddings = embeddings.gather(
-                1,
-                flat_indices.unsqueeze(-1).expand(-1, -1, self.embedding_dim),
-            ).reshape(batch_size, n, self.max_successors, self.embedding_dim)
-            successor_sum = (successor_embeddings * valid_edges).sum(dim=2)
-
-            predecessor_sum = th.zeros_like(embeddings)
-            source_messages = (
-                embeddings.unsqueeze(2).expand(-1, -1, self.max_successors, -1)
-                * valid_edges
-            ).reshape(batch_size, -1, self.embedding_dim)
-            predecessor_sum.scatter_add_(
-                1,
-                flat_indices.unsqueeze(-1).expand(-1, -1, self.embedding_dim),
-                source_messages,
+            predecessor_sum, successor_sum = _aggregate_edge_messages(
+                embeddings, edge_sources, edge_targets, edge_mask
             )
             embeddings = layer(embeddings, predecessor_sum, successor_sum) * valid_nodes
 

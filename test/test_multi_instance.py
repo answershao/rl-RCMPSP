@@ -1,9 +1,15 @@
+import csv
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import numpy as np
 
-from src.environments.multi_instance import MultiInstanceRCMPSPEnv, make_splits, write_splits
+from src.environments.multi_instance import (
+    MPLIB2_GROUP_FIELDS,
+    MultiInstanceRCMPSPEnv,
+    make_splits,
+    write_splits,
+)
 from src.environments.observation import (
     MAX_SUCCESSORS,
     ObservationLayout,
@@ -14,6 +20,55 @@ from test import TEST_INSTANCE
 
 
 class MultiInstanceTest(unittest.TestCase):
+    def test_splits_each_mplib2_parameter_group_three_one_one(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fields = ["Instance", *MPLIB2_GROUP_FIELDS, "destination"]
+            rows = []
+            for group_index, resource_strength in enumerate(("0.1", "0.9")):
+                for replicate in range(5):
+                    instance_number = group_index * 5 + replicate
+                    filename = f"MPLIB2_Set1_{instance_number}.rcmp"
+                    (root / filename).touch()
+                    row = {field: "0" for field in fields}
+                    row.update(
+                        {
+                            "Instance": str(instance_number),
+                            "set": "MPLIB 2 - Set 1",
+                            "J": "10",
+                            "I": "500",
+                            "K": "5",
+                            "RS": resource_strength,
+                            "destination": str(root / filename),
+                        }
+                    )
+                    rows.append(row)
+            with (root / "instances.csv").open(
+                "w", newline="", encoding="utf-8"
+            ) as stream:
+                writer = csv.DictWriter(stream, fieldnames=fields, delimiter=";")
+                writer.writeheader()
+                writer.writerows(rows)
+
+            splits = make_splits(root)
+
+            self.assertEqual(
+                {name: len(paths) for name, paths in splits.items()},
+                {"train": 6, "validation": 2, "test": 2},
+            )
+            self.assertEqual(
+                {Path(path).name for paths in splits.values() for path in paths},
+                {f"MPLIB2_Set1_{index}.rcmp" for index in range(10)},
+            )
+            self.assertEqual(
+                [Path(path).stem.rsplit("_", 1)[1] for path in splits["validation"]],
+                ["3", "8"],
+            )
+            self.assertEqual(
+                [Path(path).stem.rsplit("_", 1)[1] for path in splits["test"]],
+                ["4", "9"],
+            )
+
     def test_write_splits_creates_parent_directory(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "nested" / "splits.json"

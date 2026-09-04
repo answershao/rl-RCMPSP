@@ -26,7 +26,7 @@ from src.environments.multi_instance import (
     partition_instance_catalog,
     write_splits,
 )
-from src.environments.observation import observation_size
+from src.environments.observation import build_static_graph_cache, observation_size
 from src.training.callbacks import RCMPSPMetricsCallback
 from src.training.environments import make_multi_env, make_vector_env
 from src.training.ppo import create_ppo, evaluate_paths
@@ -37,8 +37,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--total-timesteps", type=int, default=6_400_000)
     parser.add_argument("--n-envs", type=int, default=16)
     parser.add_argument("--n-steps", type=int, default=256)
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--n-epochs", type=int, default=2)
+    parser.add_argument("--batch-size", type=int, default=2048)
+    parser.add_argument("--n-epochs", type=int, default=5)
+    parser.add_argument("--gamma", type=float, default=0.999)
+    parser.add_argument("--gae-lambda", type=float, default=0.98)
     parser.add_argument(
         "--gin-layers",
         type=int,
@@ -74,13 +76,21 @@ def parse_args() -> argparse.Namespace:
         "--early-stop-patience",
         type=int,
         default=0,
-        help="stop after N rollouts without makespan improvement; 0 disables it",
+        help="stop after N validation evaluations without improvement; 0 disables it",
     )
     parser.add_argument(
+        "--validation-interval",
+        type=int,
+        default=10,
+        help="evaluate the validation split every N rollouts",
+    )
+    parser.add_argument(
+        "--validation-min-delta",
         "--makespan-min-delta",
+        dest="validation_min_delta",
         type=float,
         default=0.0,
-        help="minimum average makespan improvement required to reset patience",
+        help="minimum mean FIFO-relative-gap improvement required to reset patience",
     )
     parser.add_argument(
         "--instances-root",
@@ -95,6 +105,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="evaluate at most N instances per split; 0 evaluates all",
+    )
+    parser.add_argument(
+        "--eval-batch-size",
+        type=int,
+        default=32,
+        help="number of independent instances advanced per policy inference batch",
     )
     parser.add_argument(
         "--evaluate-only",
@@ -185,6 +201,7 @@ def evaluate_and_save_results(
     model: PPO, splits: dict[str, list[str]], seed: int, reference_env,
     output_dir: Path, baseline_results: dict[str, dict[str, int]],
     max_eval_instances: int = 0,
+    eval_batch_size: int = 32,
 ) -> Path:
     """Write one makespan matrix row for each evaluated RCMPSP instance."""
     if max_eval_instances:
@@ -196,7 +213,11 @@ def evaluate_and_save_results(
         split: [] for split in splits
     }
     for split, paths in splits.items():
-        ppo_by_name = dict(evaluate_paths(model, paths, seed, reference_env))
+        ppo_by_name = dict(
+            evaluate_paths(
+                model, paths, seed, reference_env, batch_size=eval_batch_size
+            )
+        )
         for path in paths:
             instance_name = Path(path).name
             row = {
@@ -235,6 +256,38 @@ def evaluate_and_save_results(
     return result_path
 
 
+def evaluate_fifo_relative_gap(
+    model: PPO,
+    paths: list[str],
+    seed: int,
+    reference_env,
+    baseline_results: dict[str, dict[str, int]],
+    *,
+    batch_size: int,
+    evaluation_cache,
+    restore_cache,
+) -> float:
+    """Evaluate deterministic validation schedules relative to FIFO per instance."""
+    results = evaluate_paths(
+        model,
+        paths,
+        seed,
+        reference_env,
+        batch_size=batch_size,
+        evaluation_cache=evaluation_cache,
+        restore_cache=restore_cache,
+    )
+    gaps = []
+    for instance_name, makespan in results:
+        fifo = baseline_results[instance_name]["FIFO"]
+        if fifo <= 0:
+            raise ValueError(f"FIFO makespan must be positive for {instance_name}")
+        gaps.append((makespan - fifo) / fifo)
+    gap = float(np.mean(gaps))
+    print(f"validation: FIFO-relative gap={gap:+.6f} over {len(gaps)} instances")
+    return gap
+
+
 def main() -> None:
     args = parse_args()
     if (
@@ -243,18 +296,24 @@ def main() -> None:
         or args.n_steps < 1
         or args.batch_size < 1
         or args.n_epochs < 1
+        or not 0.0 <= args.gamma <= 1.0
+        or not 0.0 <= args.gae_lambda <= 1.0
         or args.gin_layers < 1
         or args.torch_threads < 1
         or args.torch_interop_threads < 1
         or args.early_stop_patience < 0
-        or args.makespan_min_delta < 0
+        or args.validation_interval < 1
+        or args.validation_min_delta < 0
     ):
         raise ValueError(
             "timesteps, n-envs, n-steps, and batch-size must be positive; "
-            "n-epochs, gin-layers, and torch thread counts must be positive"
+            "n-epochs, gin-layers, and torch thread counts must be positive; "
+            "gamma and gae-lambda must be between 0 and 1"
         )
-    if args.eval_max_instances < 0:
-        raise ValueError("--eval-max-instances must be non-negative")
+    if args.eval_max_instances < 0 or args.eval_batch_size < 1:
+        raise ValueError(
+            "--eval-max-instances must be non-negative and --eval-batch-size positive"
+        )
     rollout_size = args.n_envs * args.n_steps
     if rollout_size % args.batch_size:
         raise ValueError("batch-size must divide n-envs * n-steps")
@@ -276,6 +335,10 @@ def main() -> None:
         )
     instances_by_path = {path: parse_rcmp(path) for path in catalog_paths}
     train_instances = [instances_by_path[path] for path in train_paths]
+    validation_paths = splits["validation"]
+    validation_instances = [instances_by_path[path] for path in validation_paths]
+    if not validation_instances:
+        raise ValueError("validation split must not be empty")
     all_instances = list(instances_by_path.values())
     max_activities = max(len(instance.activities) for instance in all_instances)
     max_resources = max(instance.resource_count for instance in all_instances)
@@ -286,7 +349,8 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     runtime = (
         f"device={args.device}; envs={args.n_envs}; vec_env={args.vec_env}; "
-        f"rollout={rollout_size}; batch={args.batch_size}; amp={args.mixed_precision}; "
+        f"rollout={rollout_size}; batch={args.batch_size}; epochs={args.n_epochs}; "
+        f"gamma={args.gamma}; gae_lambda={args.gae_lambda}; amp={args.mixed_precision}; "
         f"compile={args.torch_compile}; obs_dim={observation_size(max_activities, max_resources)}"
     )
     if args.device.startswith("cuda"):
@@ -301,6 +365,7 @@ def main() -> None:
             model, splits, args.seed, reference_env, args.output_dir,
             baseline_results,
             max_eval_instances=args.eval_max_instances,
+            eval_batch_size=args.eval_batch_size,
         )
         return
 
@@ -321,6 +386,16 @@ def main() -> None:
         backend=args.vec_env,
         start_method=args.start_method,
     )
+    training_cache = build_static_graph_cache(
+        train_instances,
+        max_activities=max_activities,
+        max_resources=max_resources,
+    )
+    validation_cache = build_static_graph_cache(
+        validation_instances,
+        max_activities=max_activities,
+        max_resources=max_resources,
+    )
     model = create_ppo(
         env,
         instances=train_instances,
@@ -329,27 +404,52 @@ def main() -> None:
         n_steps=args.n_steps,
         batch_size=args.batch_size,
         n_epochs=args.n_epochs,
+        gamma=args.gamma,
+        gae_lambda=args.gae_lambda,
         gin_layers=args.gin_layers,
         mixed_precision=args.mixed_precision,
         torch_compile=args.torch_compile,
         compile_mode=args.compile_mode,
         tensorboard_log=str(args.output_dir / "tensorboard"),
+        static_cache=training_cache,
+    )
+    validation_evaluator = partial(
+        evaluate_fifo_relative_gap,
+        paths=validation_paths,
+        seed=args.seed,
+        reference_env=reference_env,
+        baseline_results=baseline_results,
+        batch_size=args.eval_batch_size,
+        evaluation_cache=validation_cache,
+        restore_cache=training_cache,
+    )
+    callback = RCMPSPMetricsCallback(
+        checkpoint_dir=args.output_dir / "checkpoints",
+        early_stop_patience=args.early_stop_patience,
+        validation_interval=args.validation_interval,
+        validation_min_delta=args.validation_min_delta,
+        validation_evaluator=validation_evaluator,
     )
     try:
         model.learn(
             total_timesteps=args.total_timesteps,
-            callback=RCMPSPMetricsCallback(
-                checkpoint_dir=args.output_dir / "checkpoints",
-                early_stop_patience=args.early_stop_patience,
-                makespan_min_delta=args.makespan_min_delta,
-            ),
+            callback=callback,
             progress_bar=False,
+        )
+        best_model_path = callback.best_model_path
+        if best_model_path is None or not best_model_path.is_file():
+            raise RuntimeError("validation did not produce a best-model checkpoint")
+        model.set_parameters(best_model_path, exact_match=True, device=args.device)
+        print(
+            f"restored best validation model: {best_model_path}; "
+            f"FIFO-relative gap={callback.best_validation_gap:+.6f}"
         )
         model.save(str(args.output_dir / "final_model"))
         evaluate_and_save_results(
             model, splits, args.seed, reference_env, args.output_dir,
             baseline_results,
             max_eval_instances=args.eval_max_instances,
+            eval_batch_size=args.eval_batch_size,
         )
     finally:
         env.close()

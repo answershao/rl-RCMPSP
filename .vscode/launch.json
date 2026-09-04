@@ -184,30 +184,41 @@
             ]
         },
         {
-            "name": "RCMPSP: Evaluate PPO-GIN on all MPLIB2 10 projects x 50 activities x 5 resources",
+            "name": "RCMPSP: Evaluate PPO-GIN on all MPLIB2 10 projects x 50 activities x 5 resources (CPU)",
             "type": "debugpy",
             "request": "launch",
             "module": "scripts.train_ppo",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
+            "env": {
+                "OMP_NUM_THREADS": "1",
+                "MKL_NUM_THREADS": "1",
+                "OPENBLAS_NUM_THREADS": "1",
+                "NUMEXPR_NUM_THREADS": "1",
+                "KMP_BLOCKTIME": "0",
+                "MALLOC_ARENA_MAX": "4",
+                "PYTHONUNBUFFERED": "1"
+            },
             "args": [
                 "--instances-root",
                 "data/MPLIB2_train_10_50_5",
                 "--evaluate-only",
                 "--device",
-                "auto",
+                "cpu",
                 "--torch-threads",
-                "1",
+                "20",
                 "--torch-interop-threads",
                 "1",
+                "--eval-batch-size",
+                "32",
                 "--seed",
                 "17",
                 "--baseline-results",
                 "outputs/baselines_mplib2_10_50_5/makespan_summary.csv",
                 "--splits",
-                "outputs/ppo_gin_a800/splits.json",
+                "outputs/ppo_gin_cpu/splits.json",
                 "--output-dir",
-                "outputs/ppo_gin_a800"
+                "outputs/ppo_gin_cpu"
             ]
         },
     ]

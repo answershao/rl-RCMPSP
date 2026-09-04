@@ -23,11 +23,16 @@ TRAIN_LOG_FILE="${LOG_DIR}/train_cpu_$(date +%Y%m%d_%H%M%S).log"
 # These can be overridden for benchmarking, for example N_ENVS=40.
 N_ENVS="${N_ENVS:-32}"
 N_STEPS="${N_STEPS:-384}"
-BATCH_SIZE="${BATCH_SIZE:-4096}"
+BATCH_SIZE="${BATCH_SIZE:-2048}"
+N_EPOCHS="${N_EPOCHS:-5}"
 TORCH_THREADS="${TORCH_THREADS:-20}"
 TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-1000000}"
-EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE:-20}"
-MAKESPAN_MIN_DELTA="${MAKESPAN_MIN_DELTA:-0}"
+GAMMA="${GAMMA:-0.999}"
+GAE_LAMBDA="${GAE_LAMBDA:-0.98}"
+EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE:-5}"
+VALIDATION_INTERVAL="${VALIDATION_INTERVAL:-10}"
+VALIDATION_MIN_DELTA="${VALIDATION_MIN_DELTA:-0}"
+EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-32}"
 
 nohup python -m scripts.train_ppo \
     --instances-root data/MPLIB2_train_10_50_5 \
@@ -35,7 +40,9 @@ nohup python -m scripts.train_ppo \
     --total-timesteps "${TOTAL_TIMESTEPS}" \
     --n-steps "${N_STEPS}" \
     --batch-size "${BATCH_SIZE}" \
-    --n-epochs 2 \
+    --n-epochs "${N_EPOCHS}" \
+    --gamma "${GAMMA}" \
+    --gae-lambda "${GAE_LAMBDA}" \
     --gin-layers 2 \
     --device cpu \
     --mixed-precision none \
@@ -44,7 +51,9 @@ nohup python -m scripts.train_ppo \
     --torch-threads "${TORCH_THREADS}" \
     --torch-interop-threads 1 \
     --early-stop-patience "${EARLY_STOP_PATIENCE}" \
-    --makespan-min-delta "${MAKESPAN_MIN_DELTA}" \
+    --validation-interval "${VALIDATION_INTERVAL}" \
+    --validation-min-delta "${VALIDATION_MIN_DELTA}" \
+    --eval-batch-size "${EVAL_BATCH_SIZE}" \
     --seed 17 \
     --splits outputs/ppo_gin_cpu/splits.json \
     --baseline-results outputs/baselines_mplib2_10_50_5/makespan_summary.csv \

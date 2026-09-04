@@ -1,8 +1,9 @@
+import csv
 from pathlib import Path
 import tempfile
 import unittest
 
-from scripts.baselines import find_instances, instance_sort_key
+from scripts.baselines import find_instances, instance_sort_key, write_summary
 
 
 class BaselinesTest(unittest.TestCase):
@@ -46,6 +47,35 @@ class BaselinesTest(unittest.TestCase):
                     "MPLIB2_Set2_0.rcmp",
                 ],
             )
+
+    def test_write_summary_includes_exact_solver_metadata(self) -> None:
+        rows = [{
+            "instance": "sample.rcmp",
+            "FIFO": 12,
+            "Shortest": 11,
+            "Random": 13,
+            "CP-SAT": 10,
+            "Remark": "feasible",
+            "Bound": 9.0,
+            "Wall Time": 1.25,
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "summary.csv"
+
+            write_summary(rows, output_path, include_exact=True)
+
+            with output_path.open(newline="", encoding="ascii") as output_file:
+                result = list(csv.DictReader(output_file))
+            self.assertEqual(
+                list(result[0]),
+                [
+                    "instance", "FIFO", "Shortest", "Random", "CP-SAT",
+                    "Remark", "Bound", "Wall Time",
+                ],
+            )
+            self.assertEqual(result[0]["Remark"], "feasible")
+            self.assertEqual(result[0]["Bound"], "9.0")
+            self.assertEqual(result[0]["Wall Time"], "1.25")
 
 
 if __name__ == "__main__":

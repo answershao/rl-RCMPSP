@@ -15,7 +15,11 @@ from src.core.rcmpsp import (
     Instance,
     parse_rcmp,
 )
-from src.environments.observation import MAX_SUCCESSORS, build_static_graph_cache
+from src.environments.observation import (
+    MAX_SUCCESSORS,
+    StaticGraphCache,
+    build_static_graph_cache,
+)
 from src.training.features import GINActorCriticHeads, SharedDirectedGINExtractor
 
 
@@ -72,11 +76,14 @@ def create_ppo(
     n_steps: int = 256,
     batch_size: int = 256,
     n_epochs: int = 2,
+    gamma: float = 0.999,
+    gae_lambda: float = 0.98,
     gin_layers: int = 2,
     mixed_precision: str = "none",
     torch_compile: bool = False,
     compile_mode: str = "reduce-overhead",
     tensorboard_log: str | None = None,
+    static_cache: StaticGraphCache | None = None,
 ) -> PPO:
     """Create PPO with a shared directed GIN and masked discrete actor.
 
@@ -85,6 +92,8 @@ def create_ppo(
     """
     if n_steps < 1 or batch_size < 1 or n_epochs < 1 or gin_layers < 1:
         raise ValueError("n_steps, batch_size, n_epochs, and gin_layers must be positive")
+    if not 0.0 <= gamma <= 1.0 or not 0.0 <= gae_lambda <= 1.0:
+        raise ValueError("gamma and gae_lambda must be between 0 and 1")
     if not instances:
         raise ValueError("instances must not be empty")
     if mixed_precision not in {"none", "bf16", "fp16"}:
@@ -96,12 +105,13 @@ def create_ppo(
     if max_resources < max(instance.resource_count for instance in instances):
         raise ValueError("environment observation cannot represent all instance resources")
     max_successors = getattr(base_env, "max_successors", MAX_SUCCESSORS)
-    static_cache = build_static_graph_cache(
-        instances,
-        max_activities=max_activities,
-        max_resources=max_resources,
-        max_successors=max_successors,
-    )
+    if static_cache is None:
+        static_cache = build_static_graph_cache(
+            instances,
+            max_activities=max_activities,
+            max_resources=max_resources,
+            max_successors=max_successors,
+        )
     model = PPO(
         GINActorCriticPolicy,
         env,
@@ -109,8 +119,8 @@ def create_ppo(
         n_steps=n_steps,
         batch_size=batch_size,
         n_epochs=n_epochs,
-        gamma=0.99,
-        gae_lambda=0.95,
+        gamma=gamma,
+        gae_lambda=gae_lambda,
         clip_range=0.2,
         ent_coef=0.01,
         policy_kwargs={
@@ -152,34 +162,81 @@ def run_policy_episode(model: PPO, env: PolicyEnvironment, *, seed: int | None =
 
 
 def evaluate_paths(
-    model: PPO, paths: list[str], seed: int, reference_env
+    model: PPO,
+    paths: list[str],
+    seed: int,
+    reference_env,
+    *,
+    batch_size: int = 32,
+    evaluation_cache: StaticGraphCache | None = None,
+    restore_cache: StaticGraphCache | None = None,
 ) -> list[tuple[str, float]]:
-    """Evaluate a padded multi-instance policy once for each supplied path."""
+    """Evaluate paths in inference batches while keeping environments independent."""
     from src.environments.multi_instance import MultiInstanceRCMPSPEnv
 
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     if not paths:
         return []
     extractor = model.policy.features_extractor
     if not isinstance(extractor, SharedDirectedGINExtractor):
         raise TypeError("model does not use the RCMPSP static graph cache")
-    evaluation_instances = [parse_rcmp(path) for path in paths]
-    extractor.set_static_cache(
-        build_static_graph_cache(
+    if evaluation_cache is None:
+        evaluation_instances = [parse_rcmp(path) for path in paths]
+        evaluation_cache = build_static_graph_cache(
             evaluation_instances,
             max_activities=reference_env.max_activities,
             max_resources=reference_env.max_resources,
             max_successors=extractor.max_successors,
         )
-    )
-    results = []
-    for offset, path in enumerate(paths):
-        env = MultiInstanceRCMPSPEnv(
-            [path],
-            max_activities=reference_env.max_activities,
-            max_resources=reference_env.max_resources,
-            instance_indices=[offset],
-            catalog_size=extractor.instance_count,
-        )
-        info = run_policy_episode(model, env, seed=seed + offset)
-        results.append((Path(path).name, float(info["makespan"])))
-    return results
+    expected_names = tuple(Path(path).stem for path in paths)
+    if evaluation_cache.instance_names != expected_names:
+        raise ValueError("evaluation cache does not match evaluation paths")
+    extractor.set_static_cache(evaluation_cache)
+    try:
+        makespans = np.zeros(len(paths), dtype=np.float64)
+        for batch_start in range(0, len(paths), batch_size):
+            batch_paths = paths[batch_start:batch_start + batch_size]
+            envs = [
+                MultiInstanceRCMPSPEnv(
+                    [path],
+                    max_activities=reference_env.max_activities,
+                    max_resources=reference_env.max_resources,
+                    instance_indices=[batch_start + local_index],
+                    catalog_size=extractor.instance_count,
+                )
+                for local_index, path in enumerate(batch_paths)
+            ]
+            try:
+                observations = [
+                    env.reset(seed=seed + batch_start + local_index)[0]
+                    for local_index, env in enumerate(envs)
+                ]
+                active = np.ones(len(envs), dtype=np.bool_)
+                while active.any():
+                    active_indices = np.flatnonzero(active)
+                    observation_batch = np.stack(
+                        [observations[index] for index in active_indices]
+                    )
+                    actions, _ = model.predict(observation_batch, deterministic=True)
+                    for local_index, action in zip(
+                        active_indices, np.asarray(actions).reshape(-1)
+                    ):
+                        observation, _, terminated, truncated, info = envs[
+                            local_index
+                        ].step(int(action))
+                        observations[local_index] = observation
+                        if terminated or truncated:
+                            makespans[batch_start + local_index] = float(
+                                info["makespan"]
+                            )
+                            active[local_index] = False
+            finally:
+                for env in envs:
+                    env.close()
+            completed = min(batch_start + batch_size, len(paths))
+            print(f"evaluation progress: {completed}/{len(paths)}")
+    finally:
+        if restore_cache is not None:
+            extractor.set_static_cache(restore_cache)
+    return [(Path(path).name, makespans[index]) for index, path in enumerate(paths)]

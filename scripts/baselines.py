@@ -87,11 +87,11 @@ def find_instances(root: Path) -> list[Path]:
 
 def evaluate_instance(
     path: Path, seed: int, exact_time_limit: float, exact_workers: int
-) -> tuple[dict[str, int | str], str]:
+) -> tuple[dict[str, float | int | str], str]:
     """Evaluate one instance in a process-pool-compatible function."""
     instance = parse_rcmp(path)
     baselines = baseline_makespans(instance, seed)
-    row: dict[str, int | str] = {
+    row: dict[str, float | int | str] = {
         "instance": path.name,
         "FIFO": baselines["fifo"],
         "Shortest": baselines["shortest"],
@@ -103,6 +103,9 @@ def evaluate_instance(
             instance, time_limit=exact_time_limit, workers=exact_workers
         )
         row["CP-SAT"] = exact.schedule.makespan
+        row["Remark"] = exact.status.lower()
+        row["Bound"] = exact.best_bound
+        row["Wall Time"] = exact.wall_time
         exact_details = (
             f" CP-SAT={row['CP-SAT']} ({exact.status}; "
             f"bound={exact.best_bound:.0f}; {exact.wall_time:.2f}s)"
@@ -110,7 +113,7 @@ def evaluate_instance(
     return row, exact_details
 
 
-def print_result(row: dict[str, int | str], exact_details: str) -> None:
+def print_result(row: dict[str, float | int | str], exact_details: str) -> None:
     print(
         f"{row['instance']}: FIFO={row['FIFO']} Shortest={row['Shortest']} "
         f"Random={row['Random']}" + exact_details,
@@ -121,7 +124,7 @@ def print_result(row: dict[str, int | str], exact_details: str) -> None:
 def evaluate_instances(
     paths: list[Path], *, seed: int, exact_time_limit: float,
     exact_workers: int, instance_workers: int,
-) -> list[dict[str, int | str]]:
+) -> list[dict[str, float | int | str]]:
     """Evaluate instances concurrently while retaining input order."""
     if instance_workers == 1:
         rows = []
@@ -133,7 +136,7 @@ def evaluate_instances(
             rows.append(row)
         return rows
 
-    ordered_rows: list[dict[str, int | str] | None] = [None] * len(paths)
+    ordered_rows: list[dict[str, float | int | str] | None] = [None] * len(paths)
     context = get_context("spawn")
     with ProcessPoolExecutor(max_workers=instance_workers, mp_context=context) as executor:
         futures = {
@@ -152,14 +155,20 @@ def evaluate_instances(
     return [row for row in ordered_rows if row is not None]
 
 
-def write_summary(rows: list[dict[str, int | str]], output_csv: Path, *, include_exact: bool) -> Path:
+def write_summary(
+    rows: list[dict[str, float | int | str]], output_csv: Path, *, include_exact: bool
+) -> Path:
     """Write the instance-by-method makespan matrix."""
     methods = ["FIFO", "Shortest", "Random"]
+    metadata = []
     if include_exact:
         methods.append("CP-SAT")
+        metadata = ["Remark", "Bound", "Wall Time"]
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     with output_csv.open("w", newline="", encoding="ascii") as output_file:
-        writer = csv.DictWriter(output_file, fieldnames=["instance", *methods])
+        writer = csv.DictWriter(
+            output_file, fieldnames=["instance", *methods, *metadata]
+        )
         writer.writeheader()
         writer.writerows(rows)
     print(f"makespan summary: {output_csv}")

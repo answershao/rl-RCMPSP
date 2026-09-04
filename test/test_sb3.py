@@ -1,21 +1,91 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
+import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 
 from scripts.train_ppo import load_baseline_results
-from src.environments.observation import ObservationLayout
+from src.environments.observation import (
+    ObservationLayout,
+    build_static_graph_cache,
+)
+from src.environments.multi_instance import make_splits
 from src.environments.rcmpsp_env import RCMPSPEnv
 from src.environments.sb3_env import make_sb3_env
 from src.training.environments import make_multi_env, make_single_env, make_vector_env
-from src.training.ppo import create_ppo
+from src.training.callbacks import RCMPSPMetricsCallback
+from src.training.features import _aggregate_edge_messages
+from src.training.ppo import create_ppo, evaluate_paths
 from test import TEST_INSTANCE
 
 
 class Sb3Test(unittest.TestCase):
+    def test_validation_callback_uses_evaluation_patience_and_saves_best(self):
+        gaps = iter((0.10, 0.095))
+        callback = RCMPSPMetricsCallback(
+            checkpoint_dir="checkpoints",
+            early_stop_patience=1,
+            validation_interval=2,
+            validation_min_delta=0.01,
+            validation_evaluator=lambda _model: next(gaps),
+        )
+        callback.model = Mock()
+        callback.model.logger = Mock()
+
+        with TemporaryDirectory() as directory:
+            callback.checkpoint_dir = Path(directory)
+            callback._on_training_start()
+            callback._on_rollout_end()
+            callback._on_rollout_start()
+            self.assertFalse(callback._stop_requested)
+            callback._on_rollout_end()
+            callback._on_rollout_start()
+
+        self.assertTrue(callback._stop_requested)
+        self.assertEqual(callback.validation_evaluations, 2)
+        self.assertAlmostEqual(callback.best_validation_gap, 0.095)
+        self.assertEqual(callback.model.save.call_count, 2)
+        self.assertFalse(callback._on_step())
+
+    def test_compact_edge_messages_match_successor_slot_aggregation(self):
+        embeddings = torch.tensor(
+            [[[1.0, 2.0], [3.0, 5.0], [7.0, 11.0], [13.0, 17.0]]]
+        )
+        successors = torch.tensor(
+            [[[1, 2, -1], [3, -1, -1], [3, -1, -1], [-1, -1, -1]]]
+        )
+        valid = successors >= 0
+        slot_targets = successors.clamp(min=0)
+        flat_targets = slot_targets.reshape(1, -1)
+        valid_slots = valid.unsqueeze(-1).to(embeddings.dtype)
+        successor_sum = (
+            embeddings.gather(1, flat_targets.unsqueeze(-1).expand(-1, -1, 2))
+            .reshape(1, 4, 3, 2)
+            .mul(valid_slots)
+            .sum(dim=2)
+        )
+        predecessor_sum = torch.zeros_like(embeddings)
+        source_messages = (
+            embeddings.unsqueeze(2).expand(-1, -1, 3, -1) * valid_slots
+        ).reshape(1, -1, 2)
+        predecessor_sum.scatter_add_(
+            1, flat_targets.unsqueeze(-1).expand(-1, -1, 2), source_messages
+        )
+
+        compact_predecessors, compact_successors = _aggregate_edge_messages(
+            embeddings,
+            torch.tensor([[0, 0, 1, 2]]),
+            torch.tensor([[1, 2, 3, 3]]),
+            torch.ones((1, 4), dtype=torch.bool),
+        )
+        torch.testing.assert_close(compact_predecessors, predecessor_sum)
+        torch.testing.assert_close(compact_successors, successor_sum)
+
     def test_shared_baseline_results_are_validated(self):
         with TemporaryDirectory() as directory:
             result_path = Path(directory) / "baselines.csv"
@@ -62,6 +132,8 @@ class Sb3Test(unittest.TestCase):
             n_epochs=1, gin_layers=1,
             seed=1, device="cpu",
         )
+        self.assertEqual(model.gamma, 0.999)
+        self.assertEqual(model.gae_lambda, 0.98)
         model.learn(total_timesteps=16, progress_bar=False)
         observation, _ = env.reset(seed=2)
         action, _ = model.predict(observation)
@@ -87,6 +159,42 @@ class Sb3Test(unittest.TestCase):
             restored_action, _ = restored.predict(observation, deterministic=True)
             expected_action, _ = model.predict(observation, deterministic=True)
             np.testing.assert_array_equal(restored_action, expected_action)
+
+        paths = make_splits()["train"][:2]
+        reference_env = SimpleNamespace(
+            max_activities=base.activity_count,
+            max_resources=base.resource_count,
+        )
+        training_cache = build_static_graph_cache(
+            [base.instance],
+            max_activities=base.activity_count,
+            max_resources=base.resource_count,
+        )
+        sequential = evaluate_paths(
+            model,
+            paths,
+            seed=11,
+            reference_env=reference_env,
+            batch_size=1,
+            restore_cache=training_cache,
+        )
+        self.assertEqual(
+            model.policy.features_extractor.instance_names,
+            training_cache.instance_names,
+        )
+        batched = evaluate_paths(
+            model,
+            paths,
+            seed=11,
+            reference_env=reference_env,
+            batch_size=2,
+            restore_cache=training_cache,
+        )
+        self.assertEqual(batched, sequential)
+        with self.assertRaisesRegex(ValueError, "batch_size must be positive"):
+            evaluate_paths(
+                model, paths, seed=11, reference_env=reference_env, batch_size=0
+            )
 
 
 if __name__ == "__main__":

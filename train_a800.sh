@@ -17,14 +17,22 @@ export PYTHONUNBUFFERED=1
 LOG_DIR="${PROJECT_ROOT}/logs"
 mkdir -p "${LOG_DIR}"
 TRAIN_LOG_FILE="${LOG_DIR}/train_a800_$(date +%Y%m%d_%H%M%S).log"
+EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-128}"
+VALIDATION_INTERVAL="${VALIDATION_INTERVAL:-10}"
+GAMMA="${GAMMA:-0.999}"
+GAE_LAMBDA="${GAE_LAMBDA:-0.98}"
+BATCH_SIZE="${BATCH_SIZE:-2048}"
+N_EPOCHS="${N_EPOCHS:-5}"
 
 nohup python -m scripts.train_ppo \
     --instances-root data/MPLIB2_train_10_50_5 \
     --n-envs 96 \
     --total-timesteps 6400000 \
     --n-steps 256 \
-    --batch-size 8192 \
-    --n-epochs 2 \
+    --batch-size "${BATCH_SIZE}" \
+    --n-epochs "${N_EPOCHS}" \
+    --gamma "${GAMMA}" \
+    --gae-lambda "${GAE_LAMBDA}" \
     --gin-layers 2 \
     --device cuda:0 \
     --mixed-precision bf16 \
@@ -35,6 +43,8 @@ nohup python -m scripts.train_ppo \
     --start-method spawn \
     --torch-threads 1 \
     --torch-interop-threads 1 \
+    --validation-interval "${VALIDATION_INTERVAL}" \
+    --eval-batch-size "${EVAL_BATCH_SIZE}" \
     --seed 17 \
     --splits outputs/ppo_gin_a800/splits.json \
     --baseline-results outputs/baselines_mplib2_10_50_5/makespan_summary.csv \
