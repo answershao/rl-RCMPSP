@@ -1,4 +1,3 @@
-from pathlib import Path
 import unittest
 
 import numpy as np
@@ -10,17 +9,15 @@ from src.environments.rcmpsp_env import (
     RCMPSPEnv,
     RESOURCE_UTILIZATION_WEIGHT,
 )
-
-
-INSTANCE = Path("MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp")
+from test import TEST_INSTANCE
 
 
 class RcmpspEnvTest(unittest.TestCase):
     def test_gymnasium_interface(self) -> None:
-        check_env(RCMPSPEnv(INSTANCE), skip_render_check=True)
+        check_env(RCMPSPEnv(TEST_INSTANCE), skip_render_check=True)
 
     def test_random_episode_has_legal_schedule_and_telescoping_reward(self) -> None:
-        env = RCMPSPEnv(INSTANCE)
+        env = RCMPSPEnv(TEST_INSTANCE)
         observation, info = env.reset(seed=11)
         self.assertTrue(env.observation_space.contains(observation))
         self.assertIn("eligible_mask", info)
@@ -61,7 +58,7 @@ class RcmpspEnvTest(unittest.TestCase):
         self.assertAlmostEqual(terminal_info["episode_reward"], total_reward)
 
     def test_incremental_decoder_matches_batch_ssgs(self) -> None:
-        instance = parse_rcmp(INSTANCE)
+        instance = parse_rcmp(TEST_INSTANCE)
         env = RCMPSPEnv(instance)
         env.reset(seed=23)
         priorities = np.random.default_rng(23).uniform(-1.0, 1.0, env.activity_count)

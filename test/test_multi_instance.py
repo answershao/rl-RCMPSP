@@ -10,6 +10,7 @@ from src.environments.observation import (
     build_static_graph_cache,
 )
 from src.environments.sb3_env import make_sb3_env
+from test import TEST_INSTANCE
 
 
 class MultiInstanceTest(unittest.TestCase):
@@ -21,13 +22,13 @@ class MultiInstanceTest(unittest.TestCase):
 
     def test_fixed_padding_and_episode(self):
         splits = make_splits()
-        env = MultiInstanceRCMPSPEnv(splits["train"][:2], seed=3)
+        env = MultiInstanceRCMPSPEnv(splits["train"][:2])
         obs, _ = env.reset(seed=3)
         self.assertTrue(env.observation_space.contains(obs))
 
     def test_observation_uses_catalog_instance_index(self):
         env = MultiInstanceRCMPSPEnv(
-            ["MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp"],
+            [TEST_INSTANCE],
             instance_indices=[3],
             catalog_size=5,
         )
@@ -36,7 +37,7 @@ class MultiInstanceTest(unittest.TestCase):
         self.assertAlmostEqual(float(observation[layout.instance_index]), 0.8)
 
     def test_static_graph_cache_contains_successor_indices(self):
-        env = MultiInstanceRCMPSPEnv(["MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp"], seed=3)
+        env = MultiInstanceRCMPSPEnv([TEST_INSTANCE])
         observation, _ = env.reset(seed=3)
         active = env.active_env
         layout = ObservationLayout(env.max_activities, env.max_resources)
@@ -62,9 +63,8 @@ class MultiInstanceTest(unittest.TestCase):
         self.assertTrue(env.observation_space.contains(observation))
 
     def test_unpadded_encoding_matches_single_instance_wrapper(self):
-        path = "MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp"
-        multi_env = MultiInstanceRCMPSPEnv([path], seed=3)
-        single_env = make_sb3_env(path)
+        multi_env = MultiInstanceRCMPSPEnv([TEST_INSTANCE])
+        single_env = make_sb3_env(TEST_INSTANCE)
         multi_observation, _ = multi_env.reset(seed=7)
         single_observation, _ = single_env.reset(seed=7)
         np.testing.assert_allclose(multi_observation, single_observation)

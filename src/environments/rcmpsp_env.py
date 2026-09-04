@@ -110,8 +110,7 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], int]):
         )
         self._resource_work_by_activity = self._durations * self._demands.sum(axis=1)
         self._capacities = capacities
-        self._capacities_array = capacities.astype(np.int32, copy=False)
-        self._capacity_limits = self._capacities_array - self._demands
+        self._capacity_limits = self._capacities - self._demands
         self._capacity_total = int(np.sum(capacities))
         self._fifo_makespan = generate_schedule(self.instance, priority_fifo).makespan
         self._predecessor_counts = np.asarray(
@@ -157,7 +156,7 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], int]):
         old_utilization = self._resource_utilization(old_time)
         start, finish = serial_sgs_insert(
             self.instance, chosen, state.starts, state.finishes, state.usage,
-            capacities_array=self._capacities_array,
+            capacities_array=self._capacities,
             demand_array=self._demands[chosen_index],
             capacity_limit_array=self._capacity_limits[chosen_index],
         )
@@ -233,9 +232,6 @@ class RCMPSPEnv(gym.Env[dict[str, np.ndarray], int]):
         schedule = Schedule(dict(state.starts), dict(state.finishes), state.current_time)
         validate_schedule(self.instance, schedule)
         return schedule
-
-    def _eligible_ids(self) -> list[ActivityId]:
-        return [self.activity_ids[index] for index in np.flatnonzero(self._state.eligible_mask)]
 
     def _resource_utilization(self, end_time: int) -> float:
         """Return aggregate capacity utilization over the current frontier."""

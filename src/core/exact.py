@@ -16,11 +16,6 @@ class ExactResult:
     best_bound: float
     wall_time: float
 
-    @property
-    def is_optimal(self) -> bool:
-        return self.status == "OPTIMAL"
-
-
 def solve_exact(instance: Instance, *, time_limit: float = 60.0, workers: int = 1) -> ExactResult:
     """Minimize makespan with integer precedence and renewable-resource constraints.
 

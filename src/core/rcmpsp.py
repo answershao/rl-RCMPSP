@@ -119,6 +119,15 @@ def random_priorities(instance: Instance, seed: int) -> dict[ActivityId, float]:
     return {activity_id: rng.random() for activity_id in instance.activities}
 
 
+def baseline_makespans(instance: Instance, seed: int) -> dict[str, int]:
+    """Evaluate the deterministic scheduling baselines for one instance."""
+    return {
+        "fifo": generate_schedule(instance, priority_fifo).makespan,
+        "shortest": generate_schedule(instance, priority_shortest_duration).makespan,
+        "random": generate_schedule(instance, random_priorities(instance, seed)).makespan,
+    }
+
+
 def generate_schedule(
     instance: Instance,
     priority: Callable[[Activity], object] | dict[ActivityId, float] = priority_fifo,
@@ -281,12 +290,3 @@ def validate_schedule(instance: Instance, schedule: Schedule) -> None:
         for resource, (amount, capacity) in enumerate(zip(amounts, instance.capacities)):
             if amount > capacity:
                 raise ValueError(f"resource {resource} exceeds capacity at time {time}: {amount} > {capacity}")
-
-
-def resource_profile(instance: Instance, schedule: Schedule) -> list[tuple[int, ...]]:
-    profile = [[0] * instance.resource_count for _ in range(schedule.makespan)]
-    for activity_id, activity in instance.activities.items():
-        for time in range(schedule.starts[activity_id], schedule.finishes[activity_id]):
-            for resource, amount in enumerate(activity.demand):
-                profile[time][resource] += amount
-    return [tuple(amounts) for amounts in profile]

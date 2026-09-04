@@ -61,21 +61,26 @@ def read_summary(path: Path) -> tuple[list[str], list[dict[str, Any]]]:
     return fields, rows
 
 
-def rcmp_header(path: Path) -> tuple[int, int, int]:
+def rcmp_header(path: Path) -> tuple[int, int]:
     """Read only the first two non-empty lines of an RCMP instance."""
     with path.open(encoding="utf-8", errors="replace") as stream:
         nonempty = (line.split() for line in stream if line.split())
         project_count = int(next(nonempty)[0])
         resource_count = int(next(nonempty)[0])
-        return project_count, resource_count, next(nonempty).__len__()
+        return project_count, resource_count
 
 
 def summarize_set(set_number: int, directory: Path) -> dict[str, Any]:
     summary_path = directory / f"Summary_Set_{set_number}.csv"
     fields, rows = read_summary(summary_path)
-    instances = sorted((directory / "Instances").glob("*.rcmp"))
+    # macOS archives may include AppleDouble metadata files named ._*.rcmp.
+    instances = sorted(
+        path
+        for path in (directory / "Instances").glob("*.rcmp")
+        if not path.name.startswith("._")
+    )
     dimensions = Counter((row["J"], row["I"], row["K"]) for row in rows)
-    headers = Counter(rcmp_header(path)[:2] for path in instances)
+    headers = Counter(rcmp_header(path) for path in instances)
 
     metrics = {}
     for field in fields:

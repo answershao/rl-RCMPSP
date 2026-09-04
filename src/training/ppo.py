@@ -13,11 +13,7 @@ from stable_baselines3 import PPO
 
 from src.core.rcmpsp import (
     Instance,
-    generate_schedule,
     parse_rcmp,
-    priority_fifo,
-    priority_shortest_duration,
-    random_priorities,
 )
 from src.environments.observation import MAX_SUCCESSORS, build_static_graph_cache
 from src.training.features import GINActorCriticHeads, SharedDirectedGINExtractor
@@ -155,15 +151,6 @@ def run_policy_episode(model: PPO, env: PolicyEnvironment, *, seed: int | None =
     return info
 
 
-def baseline_makespans(instance: Instance, seed: int) -> dict[str, int]:
-    """Evaluate the deterministic scheduling baselines for one instance."""
-    return {
-        "fifo": generate_schedule(instance, priority_fifo).makespan,
-        "shortest": generate_schedule(instance, priority_shortest_duration).makespan,
-        "random": generate_schedule(instance, random_priorities(instance, seed)).makespan,
-    }
-
-
 def evaluate_paths(
     model: PPO, paths: list[str], seed: int, reference_env
 ) -> list[tuple[str, float]]:
@@ -188,7 +175,6 @@ def evaluate_paths(
     for offset, path in enumerate(paths):
         env = MultiInstanceRCMPSPEnv(
             [path],
-            seed=seed + offset,
             max_activities=reference_env.max_activities,
             max_resources=reference_env.max_resources,
             instance_indices=[offset],

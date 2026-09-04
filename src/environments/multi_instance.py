@@ -18,7 +18,7 @@ from src.environments.observation import (
     observation_size,
 )
 
-DEFAULT_INSTANCES_ROOT = Path("data/MPLIB2_train_10_500_5")
+DEFAULT_INSTANCES_ROOT = Path("data/MPLIB2_train_10_50_5")
 
 
 def make_splits(root: str | Path = DEFAULT_INSTANCES_ROOT) -> dict[str, list[str]]:
@@ -61,7 +61,7 @@ def partition_instance_catalog(
 class MultiInstanceRCMPSPEnv(gym.Env[np.ndarray, int]):
     """Sample one instance per episode with fixed padded observation and action spaces."""
 
-    def __init__(self, instances: list[str | Path], seed: int | None = None,
+    def __init__(self, instances: list[str | Path],
                  max_activities: int | None = None, max_resources: int | None = None,
                  instance_indices: list[int] | None = None,
                  catalog_size: int | None = None):

@@ -26,7 +26,6 @@ def plot_gantt(
     output.parent.mkdir(parents=True, exist_ok=True)
 
     activity_ids = sorted(instance.activities, key=lambda item: (item[0], item[1]))
-    y_positions = list(range(len(activity_ids)))
     project_count = max((project for project, _ in activity_ids), default=0)
     cmap = plt.get_cmap("tab20", max(project_count, 1))
     colors = {project: cmap(project - 1) for project in range(1, project_count + 1)}
@@ -36,10 +35,9 @@ def plot_gantt(
     bar_height = 0.72
     labels: list[str] = []
 
-    for y, activity_id in zip(y_positions, activity_ids):
+    for y, activity_id in enumerate(activity_ids):
         activity = instance.activities[activity_id]
         start = schedule.starts[activity_id]
-        finish = schedule.finishes[activity_id]
         labels.append(f"P{activity_id[0]}-A{activity_id[1]}")
 
         if activity.duration == 0:
@@ -67,7 +65,7 @@ def plot_gantt(
                     clip_on=True,
                 )
 
-    ax.set_yticks(y_positions)
+    ax.set_yticks(range(len(activity_ids)))
     ax.set_yticklabels(labels, fontsize=7)
     ax.invert_yaxis()
     ax.set_xlim(left=0, right=max(schedule.makespan, 1))

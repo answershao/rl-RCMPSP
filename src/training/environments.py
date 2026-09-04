@@ -25,7 +25,6 @@ def make_single_env(instance: str | Path) -> Monitor:
 
 def make_multi_env(
     instance_paths: list[str],
-    seed: int,
     *,
     max_activities: int | None = None,
     max_resources: int | None = None,
@@ -36,7 +35,6 @@ def make_multi_env(
     return monitored_env(
         MultiInstanceRCMPSPEnv(
             instance_paths,
-            seed=seed,
             max_activities=max_activities,
             max_resources=max_resources,
             instance_indices=instance_indices,
@@ -47,7 +45,6 @@ def make_multi_env(
 
 def make_vector_env(
     env_fns: list[Callable[[], object]],
-    parallel: bool | None = None,
     *,
     backend: str = "auto",
     start_method: str = "spawn",
@@ -55,9 +52,7 @@ def make_vector_env(
     """Build either an in-process or subprocess SB3 vector environment."""
     if backend not in {"auto", "dummy", "subproc"}:
         raise ValueError("backend must be one of: auto, dummy, subproc")
-    if parallel is not None:
-        backend = "subproc" if parallel else "dummy"
-    elif backend == "auto":
+    if backend == "auto":
         backend = "subproc" if len(env_fns) > 1 else "dummy"
     if backend == "dummy":
         return DummyVecEnv(env_fns)

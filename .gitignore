@@ -24,6 +24,7 @@ outputs/**/*.zip
 outputs/**/*.npz
 outputs/**/events.out.tfevents.*
 outputs/**/*.csv
+outputs/**/*.json
 
 # Test and tooling caches
 .pytest_cache/
@@ -32,6 +33,8 @@ outputs/**/*.csv
 .coverage
 htmlcov/
 
+# Background training logs
+logs/
 
 # Large instance datasets
 data/

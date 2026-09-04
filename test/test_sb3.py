@@ -6,22 +6,46 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 
+from scripts.train_ppo import load_baseline_results
 from src.environments.observation import ObservationLayout
 from src.environments.rcmpsp_env import RCMPSPEnv
 from src.environments.sb3_env import make_sb3_env
 from src.training.environments import make_multi_env, make_single_env, make_vector_env
 from src.training.ppo import create_ppo
+from test import TEST_INSTANCE
 
 
 class Sb3Test(unittest.TestCase):
+    def test_shared_baseline_results_are_validated(self):
+        with TemporaryDirectory() as directory:
+            result_path = Path(directory) / "baselines.csv"
+            result_path.write_text(
+                "instance,FIFO,Shortest,Random,CP-SAT\n"
+                "sample.rcmp,10,11,12,9\n",
+                encoding="ascii",
+            )
+            self.assertEqual(
+                load_baseline_results(result_path, ["sample.rcmp"]),
+                {
+                    "sample.rcmp": {
+                        "FIFO": 10,
+                        "Shortest": 11,
+                        "Random": 12,
+                        "CP-SAT": 9,
+                    }
+                },
+            )
+            with self.assertRaisesRegex(ValueError, "does not cover"):
+                load_baseline_results(result_path, ["missing.rcmp"])
+
     def test_training_environment_factories(self):
-        single = make_single_env("MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp")
+        single = make_single_env(TEST_INSTANCE)
         observation, _ = single.reset(seed=1)
         self.assertTrue(single.observation_space.contains(observation))
 
         vector_env = make_vector_env(
-            [lambda: make_multi_env(["MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp"], seed=1)],
-            parallel=False,
+            [lambda: make_multi_env([TEST_INSTANCE])],
+            backend="dummy",
         )
         try:
             observation = vector_env.reset()
@@ -30,9 +54,9 @@ class Sb3Test(unittest.TestCase):
             vector_env.close()
 
     def test_adapter_and_short_learning_run(self):
-        base = RCMPSPEnv("MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp")
+        base = RCMPSPEnv(TEST_INSTANCE)
         check_env(base, warn=True, skip_render_check=True)
-        env = make_sb3_env("MPSPLIB/RCMP/mp_j30_a2_nr1.rcmp")
+        env = make_sb3_env(TEST_INSTANCE)
         model = create_ppo(
             env, instances=[base.instance], n_steps=8, batch_size=8,
             n_epochs=1, gin_layers=1,

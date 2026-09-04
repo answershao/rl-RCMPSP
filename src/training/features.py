@@ -136,7 +136,6 @@ class SharedDirectedGINExtractor(BaseFeaturesExtractor):
 
     def _forward(self, observations: th.Tensor) -> th.Tensor:
         n = self.max_activities
-        r = self.max_resources
         layout = self.layout
         status = observations[:, layout.activity_status]
         precedence = observations[:, layout.precedence_satisfied]

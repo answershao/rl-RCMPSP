@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Train the graph-aware PPO policy on the configured RCMPSP training split."""
 
 from __future__ import annotations
@@ -7,14 +8,17 @@ import csv
 from functools import partial
 from pathlib import Path
 import shutil
+import sys
 from types import SimpleNamespace
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.utils import set_random_seed
 
-from src.core.exact import solve_exact
 from src.core.rcmpsp import parse_rcmp
 from src.environments.multi_instance import (
     DEFAULT_INSTANCES_ROOT,
@@ -25,7 +29,7 @@ from src.environments.multi_instance import (
 from src.environments.observation import observation_size
 from src.training.callbacks import RCMPSPMetricsCallback
 from src.training.environments import make_multi_env, make_vector_env
-from src.training.ppo import baseline_makespans, create_ppo, evaluate_paths
+from src.training.ppo import create_ppo, evaluate_paths
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,6 +71,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--torch-threads", type=int, default=1)
     parser.add_argument("--torch-interop-threads", type=int, default=1)
     parser.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=0,
+        help="stop after N rollouts without makespan improvement; 0 disables it",
+    )
+    parser.add_argument(
+        "--makespan-min-delta",
+        type=float,
+        default=0.0,
+        help="minimum average makespan improvement required to reset patience",
+    )
+    parser.add_argument(
         "--instances-root",
         type=Path,
         default=DEFAULT_INSTANCES_ROOT,
@@ -86,12 +102,11 @@ def parse_args() -> argparse.Namespace:
         help="Skip training and evaluate output-dir/final_model.zip.",
     )
     parser.add_argument(
-        "--exact-time-limit",
-        type=float,
-        default=60.0,
-        help="CP-SAT seconds per instance during final evaluation; use 0 to skip.",
+        "--baseline-results",
+        type=Path,
+        default=Path("outputs/baselines_mplib2_10_50_5/makespan_summary.csv"),
+        help="shared FIFO, Shortest, Random, and CP-SAT results produced by baselines.py",
     )
-    parser.add_argument("--exact-workers", type=int, default=1, help="CP-SAT workers; 1 is reproducible.")
     return parser.parse_args()
 
 
@@ -127,9 +142,50 @@ def configure_torch_runtime(args: argparse.Namespace) -> None:
         raise RuntimeError("the selected CUDA device does not support bf16")
 
 
-def evaluate_and_save_results(model: PPO, splits: dict[str, list[str]], seed: int,
-                              reference_env, output_dir: Path, exact_time_limit: float,
-                              exact_workers: int, max_eval_instances: int = 0) -> Path:
+BASELINE_METHODS = ("FIFO", "Shortest", "Random", "CP-SAT")
+
+
+def load_baseline_results(
+    path: Path, expected_instances: list[str]
+) -> dict[str, dict[str, int]]:
+    """Load and validate shared baseline and exact-solver results."""
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"baseline results not found: {path}; run scripts.baselines first"
+        )
+    with path.open(newline="", encoding="ascii") as result_file:
+        reader = csv.DictReader(result_file)
+        required = {"instance", *BASELINE_METHODS}
+        if missing_fields := required - set(reader.fieldnames or ()):
+            raise ValueError(
+                f"{path} is missing required columns: {sorted(missing_fields)}"
+            )
+        results = {}
+        for raw in reader:
+            name = raw["instance"]
+            if name in results:
+                raise ValueError(f"{path} contains duplicate instance {name!r}")
+            try:
+                results[name] = {
+                    method: int(raw[method]) for method in BASELINE_METHODS
+                }
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{path} contains invalid values for {name!r}") from exc
+
+    missing_instances = sorted(set(expected_instances) - results.keys())
+    if missing_instances:
+        raise ValueError(
+            f"{path} does not cover {len(missing_instances)} requested instances; "
+            f"first missing instance: {missing_instances[0]}"
+        )
+    return results
+
+
+def evaluate_and_save_results(
+    model: PPO, splits: dict[str, list[str]], seed: int, reference_env,
+    output_dir: Path, baseline_results: dict[str, dict[str, int]],
+    max_eval_instances: int = 0,
+) -> Path:
     """Write one makespan matrix row for each evaluated RCMPSP instance."""
     if max_eval_instances:
         splits = {
@@ -142,33 +198,18 @@ def evaluate_and_save_results(model: PPO, splits: dict[str, list[str]], seed: in
     for split, paths in splits.items():
         ppo_by_name = dict(evaluate_paths(model, paths, seed, reference_env))
         for path in paths:
-            instance = parse_rcmp(path)
-            baselines = baseline_makespans(instance, seed)
-            ppo_makespan = int(ppo_by_name[Path(path).name])
+            instance_name = Path(path).name
             row = {
-                "instance": Path(path).name,
-                "PPO": ppo_makespan,
-                "FIFO": baselines["fifo"],
-                "Shortest": baselines["shortest"],
-                "Random": baselines["random"],
+                "instance": instance_name,
+                "PPO": int(ppo_by_name[instance_name]),
+                **baseline_results[instance_name],
             }
-            if exact_time_limit:
-                exact = solve_exact(
-                    instance, time_limit=exact_time_limit, workers=exact_workers
-                )
-                exact_makespan = exact.schedule.makespan
-                row["CP-SAT"] = exact_makespan
             rows.append(row)
             rows_by_split[split].append(row)
             print(
                 f"{split} {row['instance']}: PPO={row['PPO']} FIFO={row['FIFO']} "
-                f"Shortest={row['Shortest']} Random={row['Random']}"
-                + (
-                    f" CP-SAT={row['CP-SAT']} ({exact.status}; "
-                    f"bound={exact.best_bound:.0f}; {exact.wall_time:.2f}s)"
-                    if exact_time_limit
-                    else ""
-                )
+                f"Shortest={row['Shortest']} Random={row['Random']} "
+                f"CP-SAT={row['CP-SAT']} (cached)"
             )
 
     result_path = output_dir / "makespan_summary.csv"
@@ -176,9 +217,7 @@ def evaluate_and_save_results(model: PPO, splits: dict[str, list[str]], seed: in
         print("no instances configured; skipping makespan summary")
         return result_path
     with result_path.open("w", newline="", encoding="ascii") as result_file:
-        methods = ["PPO", "FIFO", "Shortest", "Random"]
-        if exact_time_limit:
-            methods.append("CP-SAT")
+        methods = ["PPO", *BASELINE_METHODS]
         writer = csv.DictWriter(result_file, fieldnames=["instance", *methods])
         writer.writeheader()
         writer.writerows(rows)
@@ -189,12 +228,9 @@ def evaluate_and_save_results(model: PPO, splits: dict[str, list[str]], seed: in
                 f"{split}: PPO_mean={np.mean([row['PPO'] for row in split_rows]):.2f} "
                 f"FIFO_mean={np.mean([row['FIFO'] for row in split_rows]):.2f} "
                 f"Shortest_mean={np.mean([row['Shortest'] for row in split_rows]):.2f} "
-                f"Random_mean={np.mean([row['Random'] for row in split_rows]):.2f}"
+                f"Random_mean={np.mean([row['Random'] for row in split_rows]):.2f} "
+                f"CP-SAT_mean={np.mean([row['CP-SAT'] for row in split_rows]):.2f}"
             )
-            if exact_time_limit:
-                summary += (
-                    f" CP-SAT_mean={np.mean([row['CP-SAT'] for row in split_rows]):.2f}"
-                )
             print(summary)
     return result_path
 
@@ -210,15 +246,13 @@ def main() -> None:
         or args.gin_layers < 1
         or args.torch_threads < 1
         or args.torch_interop_threads < 1
+        or args.early_stop_patience < 0
+        or args.makespan_min_delta < 0
     ):
         raise ValueError(
             "timesteps, n-envs, n-steps, and batch-size must be positive; "
             "n-epochs, gin-layers, and torch thread counts must be positive"
         )
-    if args.exact_time_limit < 0:
-        raise ValueError("--exact-time-limit must be non-negative")
-    if args.exact_workers < 1:
-        raise ValueError("--exact-workers must be positive")
     if args.eval_max_instances < 0:
         raise ValueError("--eval-max-instances must be non-negative")
     rollout_size = args.n_envs * args.n_steps
@@ -231,12 +265,15 @@ def main() -> None:
     splits = make_splits(args.instances_root)
     write_splits(args.splits, root=args.instances_root)
     train_paths = splits["train"]
+    catalog_paths = list(dict.fromkeys(path for paths in splits.values() for path in paths))
+    baseline_results = load_baseline_results(
+        args.baseline_results, [Path(path).name for path in catalog_paths]
+    )
     if args.n_envs > len(train_paths):
         raise ValueError(
             f"--n-envs ({args.n_envs}) cannot exceed the number of training "
             f"instances ({len(train_paths)})"
         )
-    catalog_paths = list(dict.fromkeys(path for paths in splits.values() for path in paths))
     instances_by_path = {path: parse_rcmp(path) for path in catalog_paths}
     train_instances = [instances_by_path[path] for path in train_paths]
     all_instances = list(instances_by_path.values())
@@ -262,7 +299,7 @@ def main() -> None:
         model = PPO.load(str(model_path), device=args.device)
         evaluate_and_save_results(
             model, splits, args.seed, reference_env, args.output_dir,
-            args.exact_time_limit, args.exact_workers,
+            baseline_results,
             max_eval_instances=args.eval_max_instances,
         )
         return
@@ -272,13 +309,12 @@ def main() -> None:
         partial(
             make_multi_env,
             worker_paths,
-            args.seed + rank,
             max_activities=max_activities,
             max_resources=max_resources,
             instance_indices=worker_indices,
             catalog_size=len(train_paths),
         )
-        for rank, (worker_paths, worker_indices) in enumerate(worker_catalogs)
+        for worker_paths, worker_indices in worker_catalogs
     ]
     env = make_vector_env(
         env_fns,
@@ -302,13 +338,17 @@ def main() -> None:
     try:
         model.learn(
             total_timesteps=args.total_timesteps,
-            callback=RCMPSPMetricsCallback(),
+            callback=RCMPSPMetricsCallback(
+                checkpoint_dir=args.output_dir / "checkpoints",
+                early_stop_patience=args.early_stop_patience,
+                makespan_min_delta=args.makespan_min_delta,
+            ),
             progress_bar=False,
         )
         model.save(str(args.output_dir / "final_model"))
         evaluate_and_save_results(
             model, splits, args.seed, reference_env, args.output_dir,
-            args.exact_time_limit, args.exact_workers,
+            baseline_results,
             max_eval_instances=args.eval_max_instances,
         )
     finally:
